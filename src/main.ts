@@ -8,6 +8,7 @@ import { PILOT_COLORS, SECTOR, STATION, armPodPos } from "../shared/config";
 import type { BoomMsg, BuiltMsg, SnapMsg, ToastMsg } from "../shared/schema";
 import { MINER, MODULES, MODULE_ORDER, levelOf, stats, type ModuleId } from "../shared/upgrades";
 import { AsteroidField } from "./asteroids";
+import { Sfx, spatial } from "./audio";
 import { Drill } from "./drill";
 import { DroneFleet } from "./drones";
 import { createSpaceEnvironment, SUN_DIR } from "./environment";
@@ -83,6 +84,8 @@ const assets = Promise.all([
   DroneFleet.load("/models/drone.glb", scene),
 ]);
 
+const sfx = new Sfx();
+
 // ---------------------------------------------------------------- login
 const login = document.getElementById("login")!;
 const loginForm = login.querySelector("form")!;
@@ -99,6 +102,7 @@ async function connect(): Promise<Net> {
       const name = nameInput.value.trim() || "Pilot";
       rememberName(name);
       loginMsg.textContent = "Connecting…";
+      void sfx.start(); // inside the click: browsers only allow audio after a user gesture
       loginForm.classList.add("busy");
       try {
         await assets;
@@ -162,9 +166,18 @@ menu = new StationMenu(document.body, {
 net.on<BoomMsg>("boom", (m) => {
   const near = Math.max(0, 1 - Math.hypot(m.x - ship.root.position.x, m.z - ship.root.position.z) / 40);
   fx.explode(new THREE.Vector3(m.x, 0, m.z), m.r, new THREE.Vector3(m.vx, 0, m.vz), near);
+  const sp = spatial(m.x - ship.root.position.x, m.z - ship.root.position.z, 70);
+  sfx.play(m.r > 2.2 ? "explosion_large" : "explosion_small", { ...sp, rate: 0.9 + Math.random() * 0.2 });
 });
-net.on<ToastMsg>("toast", (m) => (menu?.isOpen ? menu.flash(m.text) : toast(m.text)));
+net.on<ToastMsg>("toast", (m) => {
+  menu?.isOpen ? menu.flash(m.text) : toast(m.text);
+  if (/^(Not enough|Too close|Slow down|Port occupied|Fly over|That colour|Cargo hold full|Miner fleet)/.test(m.text)) sfx.play("ui_deny");
+  else if (/^Collected/.test(m.text)) sfx.play("collect");
+  else if (/packed up/.test(m.text)) sfx.play("deploy", { rate: 1.25 });
+  else if (!/^(Unloaded|Miner deployed)/.test(m.text)) sfx.play("notify", { gain: 0.8 });
+});
 net.on<BuiltMsg>("built", (m) => {
+  sfx.play("build");
   const text = `${m.by} built ${MODULES[m.module as ModuleId]?.name ?? m.module} MK ${m.level}`;
   menu?.isOpen ? menu.flash(text) : toast(text);
 });
@@ -184,10 +197,54 @@ addEventListener("keydown", (e) => {
   if (e.code === "KeyE") net.send(docked ? "undock" : "dock");
   else if (e.code === "Escape" && docked) net.send("undock");
   else if (e.code === "KeyF" && !docked) net.send("minerAction");
+  else if (e.code === "KeyN") toast(sfx.toggleMute() ? "Sound off" : "Sound on");
 });
 
 function portPos(k: number) {
   return k === 0 ? { x: 0, z: 0 } : armPodPos(MODULES.ports.angle, k - 1);
+}
+
+// ---------------------------------------------------------------- audio
+menu.el.addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).closest("button")) sfx.play("ui_click");
+});
+let wasBoosting = false;
+let lastCargo = net.me?.cargo ?? 0;
+let wasFull = false;
+let lastMinerCount = net.state.miners.size;
+const minersSeen = new Set<string>();
+net.state.miners.forEach((_, mid) => minersSeen.add(mid));
+
+function updateAudio(state: typeof net.state, me: typeof net.me, st: ReturnType<typeof stats>) {
+  if (!sfx.ready) return;
+  const flying = !docked;
+  const th = flying ? ship.throttle : 0;
+  sfx.loop("engine_loop")?.set(docked ? 0.05 : 0.16 + 0.5 * th, 0.72 + 0.5 * th + (ship.boosting ? 0.15 : 0));
+  sfx.loop("boost_loop")?.set(ship.boosting ? 0.32 * th : 0, 1, 0.08);
+  if (ship.boosting && !wasBoosting) sfx.play("boost_start", { gain: 0.8 });
+  wasBoosting = ship.boosting;
+
+  const beam = drill.beamPower;
+  sfx.loop("laser_loop")?.set(0.42 * beam, drill.target ? 1 : 1.06, 0.04);
+  sfx.loop("drill_hit_loop")?.set(drill.target ? 0.5 * beam : 0, 1, 0.05);
+
+  const cargo = me?.cargo ?? 0;
+  const gained = cargo - lastCargo;
+  if (gained > 0 && gained <= 3 && !docked) sfx.play("ore_pickup", { gain: 0.7, rate: 0.95 + Math.random() * 0.12 }, 0.05);
+  lastCargo = cargo;
+  const full = cargo >= st.capacity;
+  if (full && !wasFull && !docked) sfx.play("cargo_full");
+  wasFull = full;
+
+  // miners appearing anywhere (yours or another pilot's) -> deploy sound at that spot
+  if (state.miners.size !== lastMinerCount) {
+    state.miners.forEach((m, mid) => {
+      if (minersSeen.has(mid)) return;
+      minersSeen.add(mid);
+      sfx.play("deploy", spatial(m.x - ship.root.position.x, m.z - ship.root.position.z, 60));
+    });
+    lastMinerCount = state.miners.size;
+  }
 }
 
 // ---------------------------------------------------------------- frame loop
@@ -215,6 +272,7 @@ function frame(now?: number) {
     ship.controlsEnabled = !docked;
     document.body.classList.toggle("docked", docked);
     if (docked) { ship.boostEnergy = st.boostMax; menu!.open(); } else menu!.close();
+    sfx.play(docked ? "dock" : "undock");
   }
   ship.boostMax = st.boostMax;
   drill.range = st.drillRange;
@@ -239,7 +297,10 @@ function frame(now?: number) {
   }
   if (!docked) {
     const impact = field.collide(p, ship.velocity, ship.radius);
-    if (impact > 1) fx.shake = Math.min(1, fx.shake + impact * 0.04);
+    if (impact > 1) {
+      fx.shake = Math.min(1, fx.shake + impact * 0.04);
+      sfx.play("collision", { gain: Math.min(1, impact / 8), rate: 0.9 + Math.random() * 0.2 }, 0.25);
+    }
   }
   ship.root.updateMatrixWorld();
   drill.update(dt, t, input.drill && !docked, p, ship.forward, field, camera, fx);
@@ -249,6 +310,7 @@ function frame(now?: number) {
   });
 
   ore.sync(state.ore, dt);
+  updateAudio(state, me, st);
   fleet.sync(state.miners, dt, t, field, fx, camera);
   drones.sync(state.drones, dt, t);
   remotes.sync(state.players, net.sessionId, dt, t, field, camera, fx);
@@ -355,5 +417,5 @@ frame();
 
 // dev-only handle for automated testing / console tinkering
 if (import.meta.env.DEV) {
-  Object.assign(window, { __game: { THREE, net, ship, field, drill, ore, fx, station, fleet, drones, remotes, input, menu } });
+  Object.assign(window, { __game: { THREE, sfx, net, ship, field, drill, ore, fx, station, fleet, drones, remotes, input, menu } });
 }

@@ -89,6 +89,8 @@ export class Drill {
   range = DRILL.range; // upgraded by Beam Optics
   private beams = [makeBeam(), makeBeam()];
   private power = 0;
+  /** 0..1 beam intensity (ramps up/down), used for sound. */
+  get beamPower() { return this.power; }
   private hitGlow = new THREE.Sprite(
     new THREE.SpriteMaterial({
       map: glowTexture(),

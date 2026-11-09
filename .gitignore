@@ -6,3 +6,4 @@ tools/blender/previews
 assets-src
 __pycache__
 server-data
+tools/sound-previews
