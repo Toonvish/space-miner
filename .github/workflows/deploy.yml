@@ -1,0 +1,98 @@
+# Rolls a published image out to the VPS over SSH (the same VPS as toon-household).
+#
+# Called by release.yml after a successful build; runnable by hand to redeploy or
+# roll back to a specific digest.
+#
+# The key is pinned to a forced command on the server, so all it can ask for is
+# `deploy <digest>` (docker/space-miner-deploy.sh, installed as
+# /usr/local/bin/space-miner-deploy). It is a DIFFERENT key from toon-household's:
+# one key per app, so neither repository's secrets can touch the other's stack.
+#
+# SECRETS (Settings -> Secrets and variables -> Actions), ideally scoped to the
+# `production` environment:
+#   DEPLOY_SSH_HOST         hostname or IP of the VPS
+#   DEPLOY_SSH_USER         ssh user (in the `docker` group)
+#   DEPLOY_SSH_KEY          private key for THIS job only, no passphrase
+#   DEPLOY_SSH_KNOWN_HOSTS  output of `ssh-keyscan -p <port> <host>` (pinned host key)
+#   DEPLOY_SSH_PORT         optional, defaults to 22
+#
+# VARIABLES:
+#   DEPLOY_ENABLED          `true` turns the deploy job in release.yml on
+#   SPACE_MINER_HOSTNAME    only for the link shown on the deployment
+#
+# The GHCR package must be PUBLIC for the server's anonymous pull (a new package
+# is private: GitHub -> Packages -> space-miner -> Package settings -> Change
+# visibility), or run `docker login ghcr.io` once on the server.
+name: Deploy
+
+on:
+  workflow_call:
+    inputs:
+      image_digest:
+        description: "Image digest to deploy (sha256:…). Empty deploys :latest."
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: "Image digest (sha256:…) or empty for :latest"
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  # Per app: toon-household deploys to the same VPS but its own compose project.
+  group: deploy-space-miner
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://${{ vars.SPACE_MINER_HOSTNAME }}
+    steps:
+      - name: Prepare SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Strict host key checking against a pinned key, never keyscan-at-deploy.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if [ ! -s ~/.ssh/known_hosts ]; then
+            echo "::error::DEPLOY_SSH_KNOWN_HOSTS is empty. On the server run: ssh-keyscan -p <port> <host>"
+            exit 1
+          fi
+
+      - name: Deploy
+        env:
+          HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          USER: ${{ secrets.DEPLOY_SSH_USER }}
+          PORT: ${{ secrets.DEPLOY_SSH_PORT || '22' }}
+          DIGEST: ${{ inputs.image_digest }}
+        run: |
+          set -euo pipefail
+          if [ -n "$DIGEST" ]; then
+            printf '%s' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::Not a valid digest: $DIGEST"; exit 1; }
+            REF="$DIGEST"
+          else
+            REF=latest
+          fi
+          echo "Deploying $REF"
+          # The remote command is a request: sshd replaces it with the forced command.
+          ssh -i ~/.ssh/deploy_key -p "$PORT" -o IdentitiesOnly=yes -o BatchMode=yes \
+              "$USER@$HOST" "deploy $REF"
+
+      - name: Clean up the key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

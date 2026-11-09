@@ -1,0 +1,126 @@
+# Builds the container image, publishes it to GHCR, then deploys it.
+#
+#   push to main   -> ghcr.io/toonvish/space-miner:latest (+ :sha-<commit>, :main)
+#   tag v1.2.3     -> also :1.2.3 and :1.2
+#
+# Two architectures: amd64 (ordinary x86 VPS) and arm64 (ARM instances). The
+# client bundle is built on the runner's own platform (see Dockerfile), so only
+# the small production-dependency install runs under QEMU.
+#
+# THE DEPLOY JOB IS OFF until the repository VARIABLE `DEPLOY_ENABLED` is `true`
+# (Settings -> Secrets and variables -> Actions -> Variables). Set it once the
+# server and the DEPLOY_SSH_* secrets exist (docs/deployment.md); before that,
+# every push still publishes the image and nothing touches the server.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: "Deploy to the server after the build"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Publishing an image that fails its own checks is not a release.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: bun tools/smoke.ts
+
+      - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/arm64,linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # A plain multi-arch index: attestation manifests confuse older dockers.
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo
+            echo "By hand on the server:"
+            echo
+            echo '```bash'
+            echo "space-miner-deploy deploy ${{ steps.build.outputs.digest }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Own job, so a failed deploy never un-publishes a good image.
+  deploy:
+    needs: build
+    if: >-
+      vars.DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) ||
+       (github.event_name == 'workflow_dispatch' && inputs.deploy))
+    uses: ./.github/workflows/deploy.yml
+    with:
+      # By digest: the server runs exactly the image this run built and checked.
+      image_digest: ${{ needs.build.outputs.digest }}
+    secrets: inherit

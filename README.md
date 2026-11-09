@@ -46,21 +46,14 @@ never enable in production).
 
 ## Deployment
 
-The `Dockerfile` builds the client and runs client + game server on one port (8080):
+Production runs on the same VPS as toon-household, behind its Caddy (TLS + WebSockets), as a
+separate compose stack in `/opt/space-miner`. GitHub Actions checks every push (`ci.yml`), publishes a
+multi-arch image to `ghcr.io/toonvish/space-miner` from `main` (`release.yml`) and, once enabled,
+deploys it over a forced-command SSH key (`deploy.yml`). Setup, secrets and operations:
+[`docs/deployment.md`](docs/deployment.md).
 
-```sh
-docker build -t space-miner .
-docker run -d -p 8080:8080 -v space-miner-data:/data --name space-miner space-miner
-```
-
-- Put it behind any TLS-terminating reverse proxy (Caddy, nginx, Traefik) or a container
-  host such as Fly.io or Railway. The client connects to the same origin, so `https://`
-  automatically uses `wss://`. The proxy must allow WebSocket upgrades.
-- The world (station, miners, players' cargo) is saved to `/data/world.json` every 10 s
-  and when the last pilot leaves. Keep `/data` on a volume.
-- One process hosts one shared sector (max 24 pilots). Don't run multiple replicas
-  against the same save.
-- `GET /health` returns `{"ok":true}` for health checks.
+For a quick standalone run anywhere: `docker build -t space-miner . && docker run -p 8080:8080 -v
+space-miner-data:/data space-miner`.
 
 Identity is deliberately simple: each browser gets a random secret token (localStorage)
 plus a chosen callsign. There are no passwords.
@@ -71,6 +64,8 @@ plus a chosen callsign. There are no passwords.
 shared/     config, upgrade tables and the synced Colyseus schema (client + server)
 server/     Colyseus room, authoritative world simulation, JSON persistence
 src/        Three.js client: views of server state, local ship flight, HUD, station terminal
-tools/      Blender model scripts (+ shared bake pipeline) and the dev runner
+tools/      Blender model scripts, sound generator, dev runner, CI smoke test
+docker/     production env template and the server-side deploy command
+.github/    CI, release (image) and deploy workflows
 public/     exported .glb models
 ```

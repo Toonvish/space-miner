@@ -102,6 +102,9 @@ export const MINER = {
   laserRange: 5, // how close (to the rock surface) a miner hovers while cutting
   speed: 6, // hover speed inside its work zone
   collectRange: 5, // how close the ship must be to collect / pack up
+  refillDelay: 6, // seconds a zone must sit empty before a new rock drifts in
+  refillOffset: 8, // new rocks appear this far outside the ring
+  refillBudget: 40, // extra rocks allowed above the sector's normal asteroid count
 };
 
 export const minerCost = (minersBought: number) => Math.round(MINER.baseCost * MINER.costGrowth ** minersBought);

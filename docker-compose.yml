@@ -1,0 +1,55 @@
+# =============================================================================
+# space-miner — production stack on the VPS that also runs toon-household.
+#
+#   cd /opt/space-miner && docker compose pull && docker compose up -d
+#
+# Configuration lives in a `.env` next to this file (copy docker/env.example).
+#
+# NO CADDY HERE, ON PURPOSE. toon-household's Caddy already owns ports 80/443 on
+# this machine and terminates TLS for SPACE_MINER_HOSTNAME (toon-household ADR
+# 0018). This container only joins toon-household's Docker network under the name
+# `space-miner`, which is what that Caddy proxies to (`reverse_proxy
+# space-miner:8080`). No port is published to the host: the game is reachable only
+# through Caddy. The toon-household stack therefore has to be up first (it creates
+# the network).
+# =============================================================================
+
+name: space-miner
+
+services:
+  space-miner:
+    image: ${SPACE_MINER_IMAGE:-ghcr.io/toonvish/space-miner:latest}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      DATA_DIR: /data
+    volumes:
+      - space-miner-data:/data
+    expose:
+      - "8080"
+    networks:
+      edge:
+        aliases: [space-miner]
+    # Measured: ~80-100 MB with a full sector of 12 pilots.
+    mem_limit: ${SPACE_MINER_MEM_LIMIT:-384m}
+    # SIGTERM -> Colyseus shuts the room down and writes the world save.
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  edge:
+    external: true
+    # toon-household's compose project "toon-household" + its network "toon"
+    name: ${EDGE_NETWORK:-toon-household_toon}
+
+volumes:
+  space-miner-data:

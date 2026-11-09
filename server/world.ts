@@ -20,7 +20,7 @@ export interface WorldEvents {
 
 interface OreRuntime { vx: number; vz: number; age: number }
 interface Motion { vx: number; vz: number }
-interface MinerRuntime extends Motion { age: number; aim: number }
+interface MinerRuntime extends Motion { age: number; aim: number; idle: number; incoming: string }
 interface DroneRuntime extends Motion { timer: number; bay: number; aim: number }
 interface Mover { x: number; z: number; h?: number }
 
@@ -250,7 +250,7 @@ export class World {
     m.status = MINER_IDX("deploying");
     const id = this.id("m");
     this.state.miners.set(id, m);
-    this.minerRt.set(id, { age: settled ? 10 : 0, aim: 0, vx: 0, vz: 0 });
+    this.minerRt.set(id, { age: settled ? 10 : 0, aim: 0, vx: 0, vz: 0, idle: 0, incoming: "" });
     return id;
   }
 
@@ -372,6 +372,16 @@ export class World {
         this.steer(m, rt, m.ax, m.az, dt, MINER.speed, MINER.speed, 4, false);
         m.status = MINER_IDX(full ? "full" : "idle");
       }
+      // an idle zone slowly refills: a rock drifts in from just outside the ring
+      if (!full && !a) {
+        rt.idle += dt;
+        if (rt.idle > MINER.refillDelay && !this.state.asteroids.has(rt.incoming)) {
+          rt.incoming = this.driftRockInto(m.ax, m.az, R);
+          rt.idle = 0;
+        }
+      } else {
+        rt.idle = 0;
+      }
       // never leave the zone
       const off = Math.hypot(m.x - m.ax, m.z - m.az);
       if (off > R + 2) {
@@ -379,6 +389,30 @@ export class World {
         m.z = m.az + ((m.z - m.az) / off) * (R + 2);
       }
     });
+  }
+
+  /** Spawn a rock just outside a miner's ring, drifting towards its centre. Returns its id ("" if no room). */
+  private driftRockInto(ax: number, az: number, R: number): string {
+    if (this.state.asteroids.size >= SECTOR.asteroidCount + MINER.refillBudget) return "";
+    for (let tries = 0; tries < 12; tries++) {
+      const ang = Math.random() * Math.PI * 2;
+      const dist = R + MINER.refillOffset;
+      const x = ax + Math.cos(ang) * dist;
+      const z = az + Math.sin(ang) * dist;
+      const r = rand(1, 3);
+      if (Math.hypot(x, z) < SECTOR.clearRadius + r || Math.hypot(x, z) > SECTOR.radius) continue;
+      let free = true;
+      this.state.asteroids.forEach((o) => {
+        const op = asteroidPosAt(o, this.time);
+        if (Math.hypot(op.x - x, op.z - z) < o.r + r + 1.5) free = false;
+      });
+      if (!free) continue;
+      // aim slightly off-centre so it ends up somewhere inside the zone; drag stops it after ~v/drag metres, i.e. near the centre
+      const toward = Math.atan2(az - z, ax - x) + rand(-0.35, 0.35);
+      const sp = dist * ASTEROID.drag * rand(0.75, 1.05); // coasting distance = v / drag ≈ distance to the centre
+      return this.spawnAsteroid(x, z, r, Math.cos(toward) * sp, Math.sin(toward) * sp);
+    }
+    return "";
   }
 
   // ------------------------------------------------------------------ drones (autonomous mining ships)
