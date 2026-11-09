@@ -126,7 +126,20 @@ export class Radar {
     for (const m of miners) {
       const x = (m.pos.x - ship.x) * k;
       const y = (m.pos.z - ship.z) * k;
-      if (x * x + y * y > (R - 4) ** 2) continue;
+      if (x * x + y * y > (R - 8) ** 2) {
+        // out of range: yellow arrow on the rim pointing towards the miner (like the station's)
+        const a = Math.atan2(y, x);
+        g.save();
+        g.translate(Math.cos(a) * (R - 8), Math.sin(a) * (R - 8));
+        g.rotate(a);
+        g.beginPath();
+        g.moveTo(5, 0); g.lineTo(-3, -4); g.lineTo(-3, 4);
+        g.closePath();
+        g.fillStyle = "#ffd23a";
+        g.fill();
+        g.restore();
+        continue;
+      }
       const col = m.state === "full" ? "#ff5a4a" : m.state === "idle" ? "#ffd23a" : "#6aff8e";
       g.fillStyle = col;
       g.beginPath();
