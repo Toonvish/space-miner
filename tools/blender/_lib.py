@@ -420,6 +420,54 @@ def rock_mat(name, dark, light, tint, ore, seed=0.0, ore_amount=0.5):
     return m
 
 
+def hazard_mat(name, a=None, b=None, scale=6.0, angle=45.0):
+    """Diagonal yellow/black hazard stripes with grime (bake source)."""
+    a = a or srgb("#d9a51c")
+    b = b or srgb("#16161a")
+    m = _new_mat(name)
+    m["bake_metal"] = 0.1
+    N, Lk = m.node_tree.nodes, m.node_tree.links
+    bsdf = N["Principled BSDF"]
+    co = N.new("ShaderNodeTexCoord").outputs["Object"]
+    mp = N.new("ShaderNodeMapping")
+    mp.inputs["Rotation"].default_value = (0, 0, math.radians(angle))
+    Lk.new(co, mp.inputs["Vector"])
+    wave = N.new("ShaderNodeTexWave")
+    wave.wave_type = "BANDS"
+    wave.wave_profile = "SAW"
+    wave.inputs["Scale"].default_value = scale
+    wave.inputs["Distortion"].default_value = 0.0
+    Lk.new(mp.outputs["Vector"], wave.inputs["Vector"])
+    step = N.new("ShaderNodeMath")
+    step.operation = "GREATER_THAN"
+    step.inputs[1].default_value = 0.5
+    Lk.new(wave.outputs["Fac"], step.inputs[0])
+    mx = N.new("ShaderNodeMix")
+    mx.data_type = "RGBA"
+    Lk.new(step.outputs[0], _sock(mx, "Factor_Float"))
+    _sock(mx, "A_Color").default_value = (*a, 1)
+    _sock(mx, "B_Color").default_value = (*b, 1)
+    nz = N.new("ShaderNodeTexNoise")
+    nz.inputs["Scale"].default_value = 5.0
+    nz.inputs["Detail"].default_value = 8.0
+    Lk.new(co, nz.inputs["Vector"])
+    gr = N.new("ShaderNodeMapRange")
+    gr.inputs["From Min"].default_value = 0.45
+    gr.inputs["From Max"].default_value = 0.8
+    gr.inputs["To Max"].default_value = 0.5
+    Lk.new(nz.outputs["Fac"], gr.inputs["Value"])
+    mul = N.new("ShaderNodeMix")
+    mul.data_type = "RGBA"
+    mul.blend_type = "MULTIPLY"
+    Lk.new(gr.outputs["Result"], _sock(mul, "Factor_Float"))
+    Lk.new(_sock(mx, "Result_Color", out=True), _sock(mul, "A_Color"))
+    _sock(mul, "B_Color").default_value = (*srgb("#4a4238"), 1)
+    Lk.new(_sock(mul, "Result_Color", out=True), bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = 0.6
+    bsdf.inputs["Metallic"].default_value = 0.1
+    return m
+
+
 # ---------------------------------------------------------------- baking
 def join(objs, name):
     for o in objs:

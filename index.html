@@ -4,107 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
     <title>Space Miner</title>
-    <style>
-      html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d1f; }
-      canvas { display: block; }
-      #hud {
-        position: fixed; left: 16px; bottom: 14px;
-        font: 600 13px/1.5 ui-monospace, monospace; color: #cfe8ff;
-        text-shadow: 0 0 6px #000; pointer-events: none; user-select: none;
-      }
-      #hud b { color: #7fe9ff; }
-      #radar { position: fixed; right: 14px; bottom: 14px; pointer-events: none; }
-      #cargo {
-        position: fixed; left: 16px; top: 12px;
-        font: 600 14px/1.4 ui-monospace, monospace; color: #cfe8ff;
-        text-shadow: 0 0 6px #000; pointer-events: none; user-select: none;
-      }
-      #cargo b { color: #ffc04a; display: inline-block; }
-      #cargo .bar, #boost .bar { width: 150px; height: 5px; margin-top: 3px; background: rgba(255,255,255,0.12); }
-      #cargo .bar > i { display: block; height: 100%; background: #ffc04a; transition: width 0.2s; }
-      #cargo.full b, #cargo.full .cap { color: #ff5a4a; }
-      #cargo.full .bar > i { background: #ff5a4a; }
-      #boost { margin-top: 8px; font-size: 11px; color: #9fd8ff; }
-      #boost .bar > i { display: block; height: 100%; background: #6cc8ff; }
-      #prompt {
-        position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%);
-        font: 600 15px/1 ui-monospace, monospace; color: #7fffd8; letter-spacing: 0.06em;
-        text-shadow: 0 0 8px #000; pointer-events: none; user-select: none;
-      }
-      #station-menu {
-        position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(0.96);
-        width: min(900px, calc(100vw - 32px)); padding: 18px 20px 14px;
-        background: rgba(6, 14, 24, 0.88); border: 1px solid rgba(127, 233, 255, 0.35);
-        box-shadow: 0 0 30px rgba(0, 0, 0, 0.6), inset 0 0 40px rgba(60, 160, 200, 0.06);
-        font: 13px/1.4 ui-monospace, monospace; color: #cfe8ff;
-        opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
-      }
-      #station-menu.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
-      #station-menu header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
-      #station-menu h1 { margin: 0; font-size: 16px; letter-spacing: 0.12em; color: #7fffd8; }
-      #station-menu .note { color: #9fb4cc; font-size: 11px; min-height: 15px; }
-      #station-menu .stored { font-weight: 600; white-space: nowrap; }
-      #station-menu .stored b { color: #ffc04a; font-size: 18px; }
-      #station-menu .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; margin: 14px 0 12px; }
-      #station-menu .card { border: 1px solid rgba(255,255,255,0.12); padding: 10px 12px; background: rgba(255,255,255,0.03); }
-      #station-menu .card .title { font-weight: 700; letter-spacing: 0.05em; }
-      #station-menu .card .key { display: inline-block; width: 16px; height: 16px; line-height: 16px; text-align: center;
-        margin-right: 8px; font-size: 10px; border: 1px solid rgba(255,255,255,0.35); }
-      #station-menu .pips { display: flex; gap: 4px; margin: 7px 0; }
-      #station-menu .pips i { width: 18px; height: 5px; background: rgba(255,255,255,0.14); }
-      #station-menu .card.cargo .pips i.on { background: #ffc04a; }
-      #station-menu .card.drill .pips i.on { background: #ff7a3a; }
-      #station-menu .card.fuel .pips i.on { background: #6cc8ff; }
-      #station-menu .card.tractor .pips i.on { background: #5fffd8; }
-      #station-menu .card.range .pips i.on { background: #ffe0a0; }
-      #station-menu .card.miner { border-color: rgba(255, 210, 58, 0.45); }
-      #station-menu .card.miner .title { color: #ffd23a; }
-      #station-menu .card .owned { font-size: 11px; margin-top: 6px; color: #9fb4cc; }
-      #station-menu .card .owned b { color: #e8f4ff; }
-      .miner-label {
-        position: fixed; left: 0; top: 0; pointer-events: none; text-align: center; white-space: nowrap;
-        font: 600 10px/1.3 ui-monospace, monospace; color: #c8ffd4; text-shadow: 0 0 4px #000;
-      }
-      .miner-label b { color: #ffc04a; }
-      .miner-label span { font-size: 9px; color: #6aff8e; }
-      .miner-label.idle span { color: #ffd23a; }
-      .miner-label.full span { color: #ff5a4a; }
-      #miners { margin-top: 8px; font-size: 11px; color: #ffd23a; }
-      #toast {
-        position: fixed; left: 50%; top: 18%; transform: translate(-50%, -6px);
-        font: 600 14px/1 ui-monospace, monospace; color: #ffe9b0; text-shadow: 0 0 8px #000;
-        opacity: 0; transition: opacity 0.25s, transform 0.25s; pointer-events: none;
-      }
-      #toast.show { opacity: 1; transform: translate(-50%, 0); }
-      #station-menu .stat { font-size: 11px; color: #9fb4cc; min-height: 32px; }
-      #station-menu .stat b { color: #e8f4ff; }
-      #station-menu .stat b.next { color: #7fffd8; }
-      #station-menu button {
-        font: 600 12px ui-monospace, monospace; color: #04121a; background: #7fe9ff; border: 0;
-        padding: 6px 10px; margin-top: 8px; cursor: pointer; width: 100%;
-      }
-      #station-menu button:disabled { background: rgba(255,255,255,0.12); color: #6f8296; cursor: default; }
-      #station-menu footer { display: flex; align-items: center; gap: 12px; font-size: 11px; color: #9fb4cc; }
-      #station-menu footer button { width: auto; margin: 0; background: #ffc04a; }
-      #cargo b.bump { animation: bump 0.25s ease-out; }
-      @keyframes bump { 0% { transform: scale(1.6); } 100% { transform: scale(1); } }
-      #target {
-        position: fixed; left: 0; top: 0; display: none; pointer-events: none;
-        font: 600 10px/1.3 ui-monospace, monospace; color: #ffd2b0; text-shadow: 0 0 4px #000;
-        text-align: center; white-space: nowrap;
-      }
-      #target .bar { width: 90px; height: 4px; margin: 3px auto 0; background: rgba(255,255,255,0.15); }
-      #target .bar > i { display: block; height: 100%; background: #ff8a3a; box-shadow: 0 0 6px #ff6a1a; }
-      #fps {
-        position: fixed; right: 16px; top: 12px;
-        font: 600 12px/1.4 ui-monospace, monospace; color: #9fb4cc;
-        text-shadow: 0 0 6px #000; pointer-events: none; user-select: none;
-      }
-    </style>
   </head>
   <body>
     <div id="fps">-- FPS</div>
+    <div id="pilots"></div>
     <div id="cargo">CARGO <b id="ore">0</b><span class="cap"> / <span id="cap">20</span></span>
       <div class="bar"><i></i></div>
       <div id="boost">BOOST<div class="bar"><i></i></div></div>
@@ -117,6 +24,16 @@
     <div id="hud">
       <div>SPEED <b id="speed">0</b></div>
       <div>W thrust · A/D turn · S brake · Shift boost · Space / LMB drill · E dock · F miner · wheel zoom</div>
+    </div>
+
+    <div id="login">
+      <form autocomplete="off">
+        <div class="kicker">CO-OP MINING SECTOR</div>
+        <h1>SPACE MINER</h1>
+        <label>PILOT CALLSIGN<input maxlength="16" placeholder="Pilot" /></label>
+        <button type="submit">LAUNCH</button>
+        <div class="msg"></div>
+      </form>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

@@ -1,24 +1,29 @@
+import "./style.css";
 import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { Ship } from "./ship";
-import { Starfield } from "./starfield";
-import { createSpaceEnvironment, SUN_DIR } from "./environment";
+import { SECTOR, STATION, armPodPos } from "../shared/config";
+import type { BoomMsg, BuiltMsg, SnapMsg, ToastMsg } from "../shared/schema";
+import { MINER, MODULES, MODULE_ORDER, levelOf, stats, type ModuleId } from "../shared/upgrades";
 import { AsteroidField } from "./asteroids";
-import { Drill, DRILL } from "./drill";
+import { Drill } from "./drill";
+import { DroneFleet } from "./drones";
+import { createSpaceEnvironment, SUN_DIR } from "./environment";
 import { Effects } from "./fx";
+import { input } from "./input";
+import { MinerFleet } from "./miners";
+import { Net, identity, rememberName } from "./net";
 import { OreField } from "./ore";
 import { Radar } from "./radar";
-import { input } from "./input";
-import { Station, STATION } from "./station";
+import { RemoteShips } from "./remotes";
+import { Ship, ShipTemplate } from "./ship";
+import { Starfield } from "./starfield";
+import { Station } from "./station";
 import { StationMenu } from "./ui";
-import {
-  MINER, MODULES, MODULE_ORDER, loadState, minerCost, minersOwned, nextCost, saveState, stats, type ModuleId,
-} from "./upgrades";
-import { MinerFleet } from "./miners";
 
+// ---------------------------------------------------------------- renderer & scene
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
@@ -35,15 +40,14 @@ scene.environmentIntensity = 0.9;
 
 // Camera: perspective, tilted ~18° from straight down, follows the ship. Mouse wheel zooms.
 let camHeight = 22;
-const CAM_MIN = 12;
-const CAM_MAX = 42;
 addEventListener("wheel", (e) => {
-  camHeight = THREE.MathUtils.clamp(camHeight * Math.exp(e.deltaY * 0.001), CAM_MIN, CAM_MAX);
+  if (menu?.isOpen) return;
+  camHeight = THREE.MathUtils.clamp(camHeight * Math.exp(e.deltaY * 0.001), 12, 42);
 }, { passive: true });
 const CAM_TILT = THREE.MathUtils.degToRad(18);
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 1000);
 
-// Lighting: warm sun (casts self-shadows on the ship), cool rim light, faint fill.
+// Lighting: warm sun (self-shadows on the local ship), cool rim light, faint fill.
 const sun = new THREE.DirectionalLight("#fff1dc", 2.6);
 sun.castShadow = true;
 sun.shadow.mapSize.set(1024, 1024);
@@ -53,157 +57,15 @@ sun.shadow.normalBias = 0.02;
 const rim = new THREE.DirectionalLight("#7fa6ff", 1.4);
 scene.add(sun, sun.target, rim, rim.target);
 scene.add(new THREE.HemisphereLight("#33415e", "#0a0710", 0.5));
+const RIM_DIR = new THREE.Vector3(0.6, 0.35, -0.7).normalize();
 
 const stars = new Starfield();
 scene.add(stars.group);
-
-const labelLayer = document.getElementById("labels")!;
-const [ship, field, station, fleet] = await Promise.all([
-  Ship.load("/models/ship.glb"),
-  AsteroidField.load("/models/asteroid.glb"),
-  Station.load("/models/station.glb"),
-  MinerFleet.load("/models/miner.glb", labelLayer),
-]);
-scene.add(station.root, fleet.group);
-field.populate(ship.root.position);
-const fx = new Effects(field.variants[0], field.material);
-const ore = new OreField();
-const drill = new Drill(ship.drillMounts);
-scene.add(ship.root, ship.thruster.trail, field.group, fx.group, ore.group, drill.group);
-
-const radar = new Radar(document.body);
-
-// ---------------------------------------------------------------- progression
-const state = loadState();
-for (const id of MODULE_ORDER) station.setLevel(id, state.levels[id]);
-for (const m of state.miners) fleet.spawn(m, field);
-function applyStats() {
-  const st = stats(state);
-  drill.dpsMul = st.drillMul;
-  drill.range = st.drillRange;
-  ore.magnetRange = st.pickupRange;
-  ship.boostMax = st.boostMax;
-  ship.boostEnergy = Math.min(ship.boostEnergy, st.boostMax);
-  return st;
-}
-let shipStats = applyStats();
-ship.boostEnergy = ship.boostMax;
-
-let docked = false;
-const menu = new StationMenu(document.body, (id) => build(id), () => undock(), () => buyMiner());
-
-const toastEl = document.getElementById("toast")!;
-let toastTimer = 0;
-function toast(text: string) {
-  toastEl.textContent = text;
-  toastEl.classList.add("show");
-  toastTimer = 2.5;
-}
-
-function buyMiner() {
-  const cost = minerCost(state);
-  if (!docked || state.stored < cost || minersOwned(state) >= MINER.maxOwned) return;
-  state.stored -= cost;
-  state.minersBought++;
-  state.minerStock++;
-  saveState(state);
-  menu.render(state);
-  menu.flashNote(`Automatic miner loaded · press F in space to deploy`);
-}
-
-/** Context action (F): collect from / pack up a nearby miner, or deploy a carried one. */
-function minerAction() {
-  if (docked) return;
-  const p = ship.root.position;
-  const near = fleet.nearest(p);
-  if (near && near.dist < MINER.collectRange) {
-    const m = near.miner;
-    if (m.save.stored >= 1) {
-      const take = Math.min(Math.floor(m.save.stored), shipStats.capacity - state.cargo);
-      if (take <= 0) return toast("Cargo hold full");
-      m.save.stored -= take;
-      state.cargo += take;
-      toast(`Collected ${take} ore from miner`);
-    } else {
-      fleet.remove(m, field);
-      state.miners.splice(state.miners.indexOf(m.save), 1);
-      state.minerStock++;
-      toast("Miner packed up");
-    }
-  } else if (state.minerStock > 0) {
-    if (Math.hypot(p.x, p.z) < STATION.socketRadius + 8) return toast("Too close to the station");
-    if (near && near.dist < 6) return toast("Too close to another miner");
-    const save = { x: p.x, z: p.z, stored: 0 };
-    state.miners.push(save);
-    state.minerStock--;
-    fleet.spawn(save, field, true);
-    fx.flash(new THREE.Vector3(p.x, 0, p.z), 4, 0.4);
-    toast("Miner deployed");
-  } else {
-    return;
-  }
-  saveState(state);
-}
-
-function dock() {
-  docked = true;
-  ship.controlsEnabled = false;
-  const unloaded = state.cargo;
-  state.stored += unloaded;
-  state.cargo = 0;
-  ship.boostEnergy = ship.boostMax; // refuel
-  saveState(state);
-  menu.render(state);
-  menu.open(unloaded > 0 ? `Unloaded ${unloaded} ore · boost tank refilled` : "Boost tank refilled");
-}
-
-function undock() {
-  docked = false;
-  ship.controlsEnabled = true;
-  menu.close();
-}
-
-function build(id: ModuleId) {
-  const cost = nextCost(state, id);
-  if (!docked || state.stored < cost) return;
-  state.stored -= cost;
-  state.levels[id]++;
-  for (const pos of station.setLevel(id, state.levels[id], true)) {
-    fx.flash(pos.setY(STATION.depth + 1), 6, 0.6);
-  }
-  shipStats = applyStats();
-  ship.boostEnergy = ship.boostMax; // docked: tank is topped up to the new size
-  saveState(state);
-  menu.render(state);
-  menu.flashNote(`${MODULES[id].name} level ${state.levels[id]} built`);
-}
-
-addEventListener("keydown", (e) => {
-  if (e.repeat) return;
-  if (e.code === "KeyE") {
-    if (docked) undock();
-    else if (canDock()) dock();
-  } else if (e.code === "Escape" && docked) {
-    undock();
-  } else if (docked && /^Digit[1-5]$/.test(e.code)) {
-    build(MODULE_ORDER[Number(e.code.slice(5)) - 1]);
-  } else if (docked && e.code === "Digit6") {
-    buyMiner();
-  } else if (e.code === "KeyF") {
-    minerAction();
-  }
-});
-
-function canDock() {
-  return Math.hypot(ship.root.position.x, ship.root.position.z) < STATION.dockRadius
-    && ship.velocity.length() < STATION.dockMaxSpeed;
-}
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.45, 0.5, 0.95));
 composer.addPass(new OutputPass());
-
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -211,121 +73,249 @@ addEventListener("resize", () => {
   composer.setSize(innerWidth, innerHeight);
 });
 
-const speedEl = document.getElementById("speed")!;
-const oreEl = document.getElementById("ore")!;
-const capEl = document.getElementById("cap")!;
-const cargoBar = document.querySelector<HTMLElement>("#cargo .bar > i")!;
-const cargoBox = document.getElementById("cargo")!;
-const boostBar = document.querySelector<HTMLElement>("#boost .bar > i")!;
-const promptEl = document.getElementById("prompt")!;
-const minersEl = document.getElementById("miners")!;
-let saveTimer = 0;
-const targetEl = document.getElementById("target")!;
-const targetBar = targetEl.querySelector<HTMLElement>(".bar > i")!;
-const targetLabel = targetEl.querySelector<HTMLElement>(".label")!;
-const tmpV = new THREE.Vector3();
-const fpsEl = document.getElementById("fps")!;
-let fpsFrames = 0;
-let fpsTime = 0;
-const camFocus = new THREE.Vector3();
+// ---------------------------------------------------------------- assets (load while the pilot logs in)
+const labelLayer = document.getElementById("labels")!;
+const assets = Promise.all([
+  ShipTemplate.load("/models/ship.glb"),
+  AsteroidField.load("/models/asteroid.glb"),
+  Station.load("/models/station.glb"),
+  MinerFleet.load("/models/miner.glb", labelLayer),
+  DroneFleet.load("/models/drone.glb", scene),
+]);
+
+// ---------------------------------------------------------------- login
+const login = document.getElementById("login")!;
+const loginForm = login.querySelector("form")!;
+const nameInput = login.querySelector<HTMLInputElement>("input")!;
+const loginMsg = login.querySelector<HTMLElement>(".msg")!;
+const id = identity();
+nameInput.value = id.name;
+nameInput.focus();
+
+async function connect(): Promise<Net> {
+  return new Promise((resolve) => {
+    loginForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = nameInput.value.trim() || "Pilot";
+      rememberName(name);
+      loginMsg.textContent = "Connecting…";
+      loginForm.classList.add("busy");
+      try {
+        await assets;
+        const net = await Net.connect(name, id.token);
+        login.classList.add("hidden");
+        resolve(net);
+      } catch (err) {
+        console.error(err);
+        loginMsg.textContent = "Could not reach the game server. Is it running?";
+        loginForm.classList.remove("busy");
+      }
+    });
+  });
+}
+
+let menu: StationMenu | null = null;
+const net = await connect();
+const [shipTemplate, field, station, fleet, drones] = await assets;
+
+// ---------------------------------------------------------------- world objects
+const ship = new Ship(shipTemplate.create());
+const me0 = net.me!;
+ship.root.position.set(me0.x, 0, me0.z);
+ship.heading = me0.h;
+const fx = new Effects(field.variants[0], field.material);
+const ore = new OreField();
+const drill = new Drill(ship.drillMounts);
+const remotes = new RemoteShips(shipTemplate, scene, labelLayer);
+scene.add(ship.root, ...ship.visual.trails, field.group, fx.group, ore.group, drill.group,
+  station.root, fleet.group, drones.group, remotes.group);
+const radar = new Radar(document.body);
+
+const levelsSeen = new Map<ModuleId, number>();
+for (const mid of MODULE_ORDER) {
+  const l = levelOf(net.state.station.levels, mid);
+  station.setLevel(mid, l);
+  levelsSeen.set(mid, l);
+}
+
+// ---------------------------------------------------------------- HUD
+const $ = (sel: string) => document.querySelector<HTMLElement>(sel)!;
+const speedEl = $("#speed"), oreEl = $("#ore"), capEl = $("#cap"), cargoBar = $("#cargo .bar > i");
+const cargoBox = $("#cargo"), boostBar = $("#boost .bar > i"), promptEl = $("#prompt"), minersEl = $("#miners");
+const targetEl = $("#target"), targetBar = $("#target .bar > i"), targetLabel = $("#target .label");
+const toastEl = $("#toast"), fpsEl = $("#fps"), pilotsEl = $("#pilots");
+let toastTimer = 0;
+function toast(text: string) {
+  toastEl.textContent = text;
+  toastEl.classList.add("show");
+  toastTimer = 2.5;
+}
+
+menu = new StationMenu(document.body, {
+  build: (module) => net.send("build", { module }),
+  buyMiner: () => net.send("buyMiner"),
+  undock: () => net.send("undock"),
+}, shipTemplate);
+
+// ---------------------------------------------------------------- server events
+net.on<BoomMsg>("boom", (m) => {
+  const near = Math.max(0, 1 - Math.hypot(m.x - ship.root.position.x, m.z - ship.root.position.z) / 40);
+  fx.explode(new THREE.Vector3(m.x, 0, m.z), m.r, new THREE.Vector3(m.vx, 0, m.vz), near);
+});
+net.on<ToastMsg>("toast", (m) => (menu?.isOpen ? menu.flash(m.text) : toast(m.text)));
+net.on<BuiltMsg>("built", (m) => {
+  const text = `${m.by} built ${MODULES[m.module as ModuleId]?.name ?? m.module} MK ${m.level}`;
+  menu?.isOpen ? menu.flash(text) : toast(text);
+});
+net.on<SnapMsg>("snap", (m) => {
+  ship.root.position.set(m.x, 0, m.z);
+  ship.velocity.set(m.vx, 0, m.vz);
+});
+net.room.onLeave(() => {
+  login.classList.remove("hidden");
+  loginForm.classList.add("busy");
+  loginMsg.innerHTML = `Connection lost. <a href="">Reconnect</a>`;
+});
+
+addEventListener("keydown", (e) => {
+  if (e.repeat || !login.classList.contains("hidden")) return;
+  if (menu!.isOpen && menu!.key(e)) { e.preventDefault(); return; }
+  if (e.code === "KeyE") net.send(docked ? "undock" : "dock");
+  else if (e.code === "Escape" && docked) net.send("undock");
+  else if (e.code === "KeyF" && !docked) net.send("minerAction");
+});
+
+function portPos(k: number) {
+  return k === 0 ? { x: 0, z: 0 } : armPodPos(MODULES.ports.angle, k - 1);
+}
+
+// ---------------------------------------------------------------- frame loop
+let docked = false;
+const camFocus = ship.root.position.clone();
 const timer = new THREE.Timer();
 timer.connect(document);
-const RIM_DIR = new THREE.Vector3(0.6, 0.35, -0.7).normalize();
+let fpsFrames = 0, fpsTime = 0;
+const tmpV = new THREE.Vector3();
 
 function frame(now?: number) {
   timer.update(now);
   const dt = Math.min(timer.getDelta(), 1 / 20);
   const t = timer.getElapsed();
+  const state = net.state;
+  const serverNow = net.serverTime();
+  const me = net.me;
+  const st = stats(state.station.levels);
 
-  if (docked) {
-    // settle onto the landing pad, nose north
-    const p0 = ship.root.position;
-    p0.x += (0 - p0.x) * Math.min(1, 3 * dt);
-    p0.z += (0 - p0.z) * Math.min(1, 3 * dt);
-    ship.velocity.multiplyScalar(Math.exp(-6 * dt));
-    const dh = Math.atan2(Math.sin(-ship.heading), Math.cos(-ship.heading));
-    ship.heading += dh * Math.min(1, 3 * dt);
+  // docking transitions are driven by the server (port assignment)
+  const nowDocked = !!me && me.port >= 0;
+  if (nowDocked !== docked) {
+    docked = nowDocked;
+    ship.controlsEnabled = !docked;
+    document.body.classList.toggle("docked", docked);
+    if (docked) { ship.boostEnergy = st.boostMax; menu!.open(); } else menu!.close();
   }
+  ship.boostMax = st.boostMax;
+  drill.range = st.drillRange;
+  if (docked && me) {
+    const pp = portPos(me.port);
+    const p0 = ship.root.position;
+    p0.x += (pp.x - p0.x) * Math.min(1, 3 * dt);
+    p0.z += (pp.z - p0.z) * Math.min(1, 3 * dt);
+    ship.velocity.multiplyScalar(Math.exp(-6 * dt));
+    ship.heading += Math.atan2(Math.sin(-ship.heading), Math.cos(-ship.heading)) * Math.min(1, 3 * dt);
+  }
+
+  // --- world (server-owned) views
+  field.sync(state.asteroids, serverNow, dt);
   ship.update(dt, t);
   const p = ship.root.position;
-  station.update(dt, t);
-
-  // --- gameplay
-  field.update(dt, p);
-  const impact = field.collide(p, ship.velocity, ship.radius);
-  if (impact > 1) fx.shake = Math.min(1, fx.shake + impact * 0.04);
+  // soft sector boundary
+  const r = Math.hypot(p.x, p.z);
+  if (r > SECTOR.radius) {
+    ship.velocity.x -= (p.x / r) * (r - SECTOR.radius) * 2 * dt;
+    ship.velocity.z -= (p.z / r) * (r - SECTOR.radius) * 2 * dt;
+  }
+  if (!docked) {
+    const impact = field.collide(p, ship.velocity, ship.radius);
+    if (impact > 1) fx.shake = Math.min(1, fx.shake + impact * 0.04);
+  }
   ship.root.updateMatrixWorld();
+  drill.update(dt, t, input.drill && !docked, p, ship.forward, field, camera, fx);
+  net.sendMove(dt, {
+    x: p.x, z: p.z, h: ship.heading, vx: ship.velocity.x, vz: ship.velocity.z,
+    th: ship.throttle, b: ship.boosting, d: !!drill.target, tg: drill.target?.id ?? "",
+  });
 
-  const res = drill.update(dt, t, input.drill && !docked, p, ship.forward, field, camera, fx);
-  if (res.destroyed) {
-    const a = res.destroyed;
-    fx.explode(a.pos, a.radius, a.vel);
-    ore.spawn(a.pos, Math.ceil(a.radius * 2), a.vel);
-    field.destroy(a);
+  ore.sync(state.ore, dt);
+  fleet.sync(state.miners, dt, t, field, fx, camera);
+  drones.sync(state.drones, dt, t);
+  remotes.sync(state.players, net.sessionId, dt, t, field, camera, fx);
+  for (const mid of MODULE_ORDER) {
+    const l = levelOf(state.station.levels, mid);
+    if (l !== levelsSeen.get(mid)) {
+      for (const pos of station.setLevel(mid, l, true)) fx.flash(pos.setY(STATION.depth + 1), 6, 0.6);
+      levelsSeen.set(mid, l);
+    }
   }
-  const got = ore.update(dt, p, Math.max(0, shipStats.capacity - state.cargo));
-  if (got > 0) {
-    state.cargo += got;
-    oreEl.classList.remove("bump");
-    void oreEl.offsetWidth; // restart the CSS animation
-    oreEl.classList.add("bump");
-  }
-  saveTimer += dt;
-  if (saveTimer > 5) {
-    saveTimer = 0;
-    saveState(state);
-  }
-  fleet.update(dt, t, field, fx, p, camera);
+  station.update(dt, t);
   fx.update(dt);
 
-  // look slightly ahead in the direction of travel, zoom out with speed
+  // --- camera & lights
   const speed = ship.velocity.length();
-  const lead = ship.velocity.clone().multiplyScalar(0.35);
-  camFocus.lerp(p.clone().add(lead), 1 - Math.exp(-4 * dt));
-  const h = camHeight + speed * 0.25;
+  camFocus.lerp(p.clone().addScaledVector(ship.velocity, 0.35), 1 - Math.exp(-4 * dt));
+  const h = camHeight + speed * 0.25 + (docked ? 6 : 0);
   camera.position.set(camFocus.x, h, camFocus.z + h * Math.tan(CAM_TILT));
   camera.lookAt(camFocus);
   if (fx.shake > 0.01) {
-    const s = fx.shake * 0.35;
-    camera.position.x += (Math.random() - 0.5) * s;
-    camera.position.z += (Math.random() - 0.5) * s;
+    camera.position.x += (Math.random() - 0.5) * fx.shake * 0.35;
+    camera.position.z += (Math.random() - 0.5) * fx.shake * 0.35;
   }
-
-  // lights travel with the ship so the shadow frustum stays tight
   sun.position.copy(p).addScaledVector(SUN_DIR, 10);
   sun.target.position.copy(p);
   rim.position.copy(p).addScaledVector(RIM_DIR, 10);
   rim.target.position.copy(p);
-
   stars.update(camera.position);
-  speedEl.textContent = speed.toFixed(1);
 
-  // cargo / boost HUD and docking prompt
-  oreEl.textContent = String(state.cargo);
-  capEl.textContent = String(shipStats.capacity);
-  const fill = state.cargo / shipStats.capacity;
+  // --- HUD
+  const cargo = me?.cargo ?? 0;
+  speedEl.textContent = speed.toFixed(1);
+  oreEl.textContent = String(cargo);
+  capEl.textContent = String(st.capacity);
+  const fill = cargo / st.capacity;
   cargoBar.style.width = `${Math.min(1, fill) * 100}%`;
   cargoBox.classList.toggle("full", fill >= 1);
   boostBar.style.width = `${(ship.boostEnergy / ship.boostMax) * 100}%`;
-  const nearMiner = fleet.nearest(p);
-  if (docked) {
-    promptEl.textContent = "";
-  } else if (Math.hypot(p.x, p.z) < STATION.dockRadius) {
-    promptEl.textContent = canDock() ? "Press E to dock" : "Slow down to dock";
-  } else if (nearMiner && nearMiner.dist < MINER.collectRange) {
-    const st = Math.floor(nearMiner.miner.save.stored);
-    promptEl.textContent = st > 0 ? `Press F to collect ${st} ore` : "Press F to pack up the miner";
-  } else if (fill >= 1) {
-    promptEl.textContent = "Cargo hold full — return to the station";
-  } else {
-    promptEl.textContent = "";
+  minersEl.textContent = me && me.minerStock > 0 ? `MINERS ${me.minerStock} · F to deploy` : "";
+
+  let prompt = "";
+  if (!docked) {
+    let port = -1, pd = STATION.dockRadius;
+    state.station.ports.forEach((_, k) => {
+      const pp = portPos(k);
+      const d = Math.hypot(pp.x - p.x, pp.z - p.z);
+      if (d < pd) { pd = d; port = k; }
+    });
+    const nearMiner = fleet.nearest(p);
+    if (port >= 0) {
+      const occ = state.station.ports[port];
+      prompt = occ !== "" ? "Port occupied" : speed > STATION.dockMaxSpeed ? "Slow down to dock" : "Press E to dock";
+    } else if (nearMiner && nearMiner.dist < MINER.collectRange) {
+      const s = Math.floor(nearMiner.miner.stored);
+      prompt = s > 0 ? `Press F to collect ${s} ore` : "Press F to pack up the miner";
+    } else if (fill >= 1) {
+      prompt = "Cargo hold full — return to the station";
+    } else if (r > SECTOR.radius - 10) {
+      prompt = "Leaving the sector";
+    }
   }
-
-  minersEl.textContent = state.minerStock > 0 ? `MINERS ${state.minerStock} · F to deploy` : "";
+  promptEl.textContent = prompt;
   if (toastTimer > 0 && (toastTimer -= dt) <= 0) toastEl.classList.remove("show");
-  fleet.updateLabels(camera);
 
-  // target integrity bar floats above the drilled asteroid
+  const names: string[] = [];
+  state.players.forEach((pl, sid) => names.push(
+    `<span style="color:hsl(${pl.hue},90%,72%)">${sid === net.sessionId ? "▸ " : ""}${pl.name.replace(/</g, "")}</span>`));
+  pilotsEl.innerHTML = `PILOTS ${state.players.size}<br>${names.join("<br>")}`;
+
   const tgt = drill.target;
   if (tgt) {
     tmpV.copy(tgt.pos).setZ(tgt.pos.z - tgt.radius * 1.15).project(camera);
@@ -337,13 +327,17 @@ function frame(now?: number) {
   } else {
     targetEl.style.display = "none";
   }
-  radar.draw(
-    { x: p.x, z: p.z, heading: ship.heading },
-    field.list, ore.items.map((o) => o.mesh.position), drill.target, drill.range, t,
-    { x: 0, z: 0 }, fleet.list,
-  );
+  fleet.updateLabels(camera);
+  remotes.updateLabels(camera);
+  menu!.update(dt, state, net.sessionId, p);
 
-  // FPS counter, refreshed twice per second (uses real frame time, not the clamped dt)
+  const pilots: { x: number; z: number; hue: number }[] = [];
+  const droneDots: { x: number; z: number }[] = [];
+  state.players.forEach((pl, sid) => { if (sid !== net.sessionId) pilots.push({ x: pl.x, z: pl.z, hue: pl.hue }); });
+  for (const d of drones.list) droneDots.push({ x: d.pos.x, z: d.pos.z });
+  radar.draw({ x: p.x, z: p.z, heading: ship.heading }, field.list, ore.positions, drill.target, drill.range, t,
+    { x: 0, z: 0 }, fleet.list, { pilots, drones: droneDots, sectorRadius: SECTOR.radius });
+
   fpsFrames++;
   fpsTime += timer.getDelta();
   if (fpsTime >= 0.5) {
@@ -359,5 +353,5 @@ frame();
 
 // dev-only handle for automated testing / console tinkering
 if (import.meta.env.DEV) {
-  Object.assign(window, { __game: { THREE, ship, field, drill, ore, fx, station, state, dock, undock, build, input, fleet, minerAction } });
+  Object.assign(window, { __game: { THREE, net, ship, field, drill, ore, fx, station, fleet, drones, remotes, input, menu } });
 }

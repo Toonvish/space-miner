@@ -1,14 +1,10 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { MODULES, MODULE_ORDER, type ModuleId } from "./upgrades";
+import { MODULES, MODULE_ORDER, type ModuleId } from "../shared/upgrades";
+import { STATION } from "../shared/config";
 
-export const STATION = {
-  depth: -3, // the station sits below the flight plane; the ship flies over it
-  socketRadius: 3.9, // where the first module piece attaches
-  moduleLength: 3.6, // length of one truss + pod piece
-  dockRadius: 5, // fly within this distance of the pad to dock
-  dockMaxSpeed: 6,
-};
+export { STATION };
+
 
 const isGlow = (name: string) => /Glow$/.test(name);
 

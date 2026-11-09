@@ -1,39 +1,34 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { asteroidPosAt, asteroidVelAt, hash } from "../shared/config";
+import type { AsteroidState } from "../shared/schema";
 
+/** Client-side view of one server asteroid. */
 export interface Asteroid {
-  id: number;
+  id: string;
   mesh: THREE.Mesh;
-  pos: THREE.Vector3; // logical position (mesh may be offset by shake)
+  pos: THREE.Vector3; // extrapolated from the synced motion parameters
   vel: THREE.Vector3;
-  radius: number; // collision / gameplay radius
+  radius: number;
   hp: number;
   maxHp: number;
   spinAxis: THREE.Vector3;
-  spin: number; // rad/s
-  shake: number; // visual shake amount, decays
+  spin: number;
+  shake: number;
 }
 
-export const ASTEROIDS = {
-  targetCount: 45, // kept around the player
-  spawnMin: 75, // new asteroids appear this far away (outside the view)
-  spawnMax: 125,
-  despawn: 160,
-  minRadius: 0.9,
-  maxRadius: 4.5,
-  splitRadius: 1.8, // bigger than this splits into fragments on destruction
-  hpPerArea: 8, // hp = hpPerArea * r²
-  clearRadius: 34, // keep the area around the station (at the origin) free
-};
+interface MapLike<T> {
+  forEach(cb: (value: T, key: string) => void): void;
+  get(key: string): T | undefined;
+}
 
 const tmpQ = new THREE.Quaternion();
 
+/** Renders the server's asteroid map. Motion is extrapolated (no per-tick position sync). */
 export class AsteroidField {
   readonly group = new THREE.Group();
   readonly list: Asteroid[] = [];
-  /** Points (e.g. deployed miners) around which asteroids are never despawned. */
-  anchors: { pos: THREE.Vector3; radius: number }[] = [];
-  private nextId = 1;
+  private byId = new Map<string, Asteroid>();
 
   static async load(url: string): Promise<AsteroidField> {
     const gltf = await new GLTFLoader().loadAsync(url);
@@ -56,96 +51,48 @@ export class AsteroidField {
 
   private constructor(readonly variants: THREE.BufferGeometry[], readonly material: THREE.Material) {}
 
-  /** Fill the area around `center`, keeping a clear zone for the player. */
-  populate(center: THREE.Vector3) {
-    let guard = 0;
-    while (this.list.length < ASTEROIDS.targetCount && guard++ < 2000) {
-      const a = Math.random() * Math.PI * 2;
-      const d = Math.random() * ASTEROIDS.spawnMax;
-      this.trySpawn(new THREE.Vector3(center.x + Math.cos(a) * d, 0, center.z + Math.sin(a) * d));
-    }
-  }
-
-  private randomRadius() {
-    return ASTEROIDS.minRadius + Math.random() ** 2.2 * (ASTEROIDS.maxRadius - ASTEROIDS.minRadius);
-  }
-
-  private trySpawn(pos: THREE.Vector3, radius = this.randomRadius()): Asteroid | null {
-    if (Math.hypot(pos.x, pos.z) < ASTEROIDS.clearRadius + radius) return null;
-    for (const o of this.list) {
-      if (o.pos.distanceTo(pos) < o.radius + radius + 2) return null;
-    }
-    const drift = new THREE.Vector3((Math.random() - 0.5) * 1.2, 0, (Math.random() - 0.5) * 1.2);
-    return this.spawn(pos, radius, drift);
-  }
-
-  spawn(pos: THREE.Vector3, radius: number, vel: THREE.Vector3): Asteroid {
-    const geo = this.variants[Math.floor(Math.random() * this.variants.length)];
-    const mesh = new THREE.Mesh(geo, this.material);
-    // per-instance stretch for variety; gameplay radius stays the mean
-    mesh.scale.set(
-      radius * (0.85 + Math.random() * 0.3),
-      radius * (0.85 + Math.random() * 0.3),
-      radius * (0.85 + Math.random() * 0.3),
-    );
-    mesh.quaternion.random();
+  private create(id: string, s: AsteroidState): Asteroid {
+    // cosmetic randomness derived from the id, so every client sees the same rock
+    let h = hash(id);
+    const rnd = () => ((h = Math.imul(h ^ (h >>> 15), 2246822519) >>> 0) % 10000) / 10000;
+    const mesh = new THREE.Mesh(this.variants[Math.floor(rnd() * this.variants.length)], this.material);
+    const r = s.r;
+    mesh.scale.set(r * (0.85 + rnd() * 0.3), r * (0.85 + rnd() * 0.3), r * (0.85 + rnd() * 0.3));
+    mesh.quaternion.setFromEuler(new THREE.Euler(rnd() * 6.28, rnd() * 6.28, rnd() * 6.28));
     mesh.receiveShadow = true;
-    mesh.position.copy(pos);
     this.group.add(mesh);
-    const maxHp = ASTEROIDS.hpPerArea * radius * radius;
     const a: Asteroid = {
-      id: this.nextId++,
-      mesh,
-      pos: pos.clone(),
-      vel,
-      radius,
-      hp: maxHp,
-      maxHp,
-      spinAxis: new THREE.Vector3().randomDirection(),
-      spin: (Math.random() - 0.5) * (1.2 / radius),
+      id, mesh, radius: r, hp: s.hp, maxHp: s.maxHp,
+      pos: new THREE.Vector3(), vel: new THREE.Vector3(),
+      spinAxis: new THREE.Vector3(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).normalize(),
+      spin: (rnd() - 0.5) * (1.2 / r),
       shake: 0,
     };
+    this.byId.set(id, a);
     this.list.push(a);
     return a;
   }
 
-  remove(a: Asteroid) {
-    const i = this.list.indexOf(a);
-    if (i >= 0) this.list.splice(i, 1);
-    this.group.remove(a.mesh);
-  }
+  get(id: string) { return this.byId.get(id); }
 
-  /** Remove `a`; large asteroids break into 2-3 smaller ones flying apart. */
-  destroy(a: Asteroid): Asteroid[] {
-    this.remove(a);
-    if (a.radius <= ASTEROIDS.splitRadius) return [];
-    const n = a.radius > 3.2 ? 3 : 2;
-    const children: Asteroid[] = [];
-    const base = Math.random() * Math.PI * 2;
-    for (let i = 0; i < n; i++) {
-      const ang = base + (i / n) * Math.PI * 2;
-      const dir = new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang));
-      const r = a.radius * (n === 3 ? 0.5 : 0.6) * (0.9 + Math.random() * 0.2);
-      const pos = a.pos.clone().addScaledVector(dir, a.radius * 0.5);
-      const vel = a.vel.clone().addScaledVector(dir, 1.5 + Math.random() * 1.5);
-      children.push(this.spawn(pos, r, vel));
-    }
-    return children;
-  }
-
-  update(dt: number, player: THREE.Vector3) {
+  /** Reconcile with the synced map and advance visuals to server time `t`. */
+  sync(states: MapLike<AsteroidState>, t: number, dt: number) {
+    states.forEach((s, id) => {
+      const a = this.byId.get(id) ?? this.create(id, s);
+      if (s.hp < a.hp - 0.01) a.shake = Math.max(a.shake, 0.06); // being drilled
+      a.hp = s.hp;
+      a.maxHp = s.maxHp;
+      const p = asteroidPosAt(s, t);
+      const v = asteroidVelAt(s, t);
+      a.pos.set(p.x, 0, p.z);
+      a.vel.set(v.vx, 0, v.vz);
+    });
     for (let i = this.list.length - 1; i >= 0; i--) {
       const a = this.list[i];
-      // gently push drifting rocks out of the station's clear zone
-      const fromStation = Math.hypot(a.pos.x, a.pos.z);
-      if (fromStation < ASTEROIDS.clearRadius * 0.85 && fromStation > 0) {
-        a.vel.x += (a.pos.x / fromStation) * 0.8 * dt;
-        a.vel.z += (a.pos.z / fromStation) * 0.8 * dt;
-      }
-      a.pos.addScaledVector(a.vel, dt);
-      a.vel.multiplyScalar(Math.exp(-0.05 * dt)); // fragments settle down slowly
-      if (a.pos.distanceTo(player) > ASTEROIDS.despawn && !this.anchors.some((n) => n.pos.distanceTo(a.pos) < n.radius)) {
-        this.remove(a);
+      if (!states.get(a.id)) {
+        this.group.remove(a.mesh);
+        this.byId.delete(a.id);
+        this.list.splice(i, 1);
         continue;
       }
       tmpQ.setFromAxisAngle(a.spinAxis, a.spin * dt);
@@ -158,20 +105,10 @@ export class AsteroidField {
       }
       a.mesh.updateMatrixWorld();
     }
-    // keep the field populated just outside the visible area
-    let guard = 0;
-    while (this.list.length < ASTEROIDS.targetCount && guard++ < 20) {
-      const ang = Math.random() * Math.PI * 2;
-      const d = ASTEROIDS.spawnMin + Math.random() * (ASTEROIDS.spawnMax - ASTEROIDS.spawnMin);
-      this.trySpawn(new THREE.Vector3(player.x + Math.cos(ang) * d, 0, player.z + Math.sin(ang) * d));
-    }
   }
 
-  /**
-   * Circle-vs-circle collision with the ship on the XZ plane (mass ∝ r²).
-   * Returns the impact speed (0 if no contact) for camera shake.
-   */
-  collide(pos: THREE.Vector3, vel: THREE.Vector3, shipRadius: number, shipMass = 1.5): number {
+  /** Client-side ship bounce (asteroids are server-owned and don't move from it). */
+  collide(pos: THREE.Vector3, vel: THREE.Vector3, shipRadius: number): number {
     let impact = 0;
     for (const a of this.list) {
       const dx = pos.x - a.pos.x;
@@ -181,23 +118,12 @@ export class AsteroidField {
       if (dist >= minD || dist === 0) continue;
       const nx = dx / dist;
       const nz = dz / dist;
-      const astMass = a.radius * a.radius * 2;
-      // separate proportionally to inverse mass
-      const pen = minD - dist;
-      const wShip = astMass / (astMass + shipMass);
-      pos.x += nx * pen * wShip;
-      pos.z += nz * pen * wShip;
-      a.pos.x -= nx * pen * (1 - wShip);
-      a.pos.z -= nz * pen * (1 - wShip);
-      // bounce
+      pos.x += nx * (minD - dist);
+      pos.z += nz * (minD - dist);
       const vn = (vel.x - a.vel.x) * nx + (vel.z - a.vel.z) * nz;
       if (vn < 0) {
-        const e = 0.35;
-        const j = (-(1 + e) * vn) / (1 / shipMass + 1 / astMass);
-        vel.x += (nx * j) / shipMass;
-        vel.z += (nz * j) / shipMass;
-        a.vel.x -= (nx * j) / astMass;
-        a.vel.z -= (nz * j) / astMass;
+        vel.x -= 1.35 * vn * nx;
+        vel.z -= 1.35 * vn * nz;
         impact = Math.max(impact, -vn);
       }
     }

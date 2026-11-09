@@ -29,27 +29,14 @@ export const FLIGHT = {
 /** Materials that emit light: rendered unlit with HDR colour so bloom picks them up. */
 const GLOW = new Set(["EngineGlow", "NavRed", "NavGreen"]);
 
-export class Ship {
-  readonly root = new THREE.Group(); // position + heading
-  private bankGroup = new THREE.Group(); // visual roll
-  readonly velocity = new THREE.Vector3();
-  heading = 0;
-  private angVel = 0;
-  throttle = 0;
-  readonly thruster = new Thruster();
-  readonly radius = 1.1; // collision radius on the XZ plane
-  controlsEnabled = true; // false while docked
-  boostMax = 2; // seconds of boost (upgradable)
-  boostEnergy = 2;
-  readonly drillMounts: THREE.Object3D[] = [];
-  private navLights: THREE.MeshBasicMaterial[] = [];
-
-  static async load(url: string): Promise<Ship> {
+/** Loaded ship model; `create()` makes independent visual instances (local + remote ships). */
+export class ShipTemplate {
+  static async load(url: string): Promise<ShipTemplate> {
     const gltf = await new GLTFLoader().loadAsync(url);
-    return new Ship(gltf.scene);
+    return new ShipTemplate(gltf.scene);
   }
 
-  private constructor(model: THREE.Object3D) {
+  private constructor(private model: THREE.Object3D) {
     const glowMats = new Map<string, THREE.MeshBasicMaterial>();
     model.traverse((o) => {
       const mesh = o as THREE.Mesh;
@@ -62,6 +49,7 @@ export class Ship {
             name: src.name,
             color: src.emissive.clone().multiplyScalar(src.emissiveIntensity * 0.6),
           });
+          m.userData.base = m.color.clone();
           glowMats.set(src.name, m);
         }
         mesh.material = m;
@@ -78,24 +66,91 @@ export class Ship {
         mesh.receiveShadow = true;
       }
     });
+  }
+
+  create(): ShipVisual {
+    return new ShipVisual(this.model.clone(true));
+  }
+}
+
+/** One rendered ship: model, banking, engine plume, nav lights, drill emitters. */
+export class ShipVisual {
+  readonly root = new THREE.Group(); // position + heading
+  readonly bankGroup = new THREE.Group(); // visual roll
+  readonly thruster = new Thruster(); // main engine
+  readonly thrusters: Thruster[] = [this.thruster]; // main + optional pod engines
+  readonly drillMounts: THREE.Object3D[] = [];
+  private navLights: THREE.MeshBasicMaterial[] = [];
+
+  /** World-space exhaust trails: add these to the scene. */
+  get trails(): THREE.Points[] { return this.thrusters.map((t) => t.trail); }
+
+  constructor(model: THREE.Object3D) {
     this.root.add(this.bankGroup);
     this.bankGroup.add(model);
-
     for (const n of ["DrillMountL", "DrillMountR"]) {
       const m = model.getObjectByName(n);
       if (m) this.drillMounts.push(m);
     }
     if (this.drillMounts.length === 0) this.drillMounts.push(model);
-
-    const mount = model.getObjectByName("ThrusterMount");
-    (mount ?? model).add(this.thruster.group);
-    this.thruster.setGlowMaterial(glowMats.get("EngineGlow"));
-    for (const n of ["NavRed", "NavGreen"]) {
-      const m = glowMats.get(n);
-      if (m) this.navLights.push(m);
+    (model.getObjectByName("ThrusterMount") ?? model).add(this.thruster.group);
+    for (const n of ["ThrusterMountL", "ThrusterMountR"]) {
+      const mount = model.getObjectByName(n);
+      if (!mount) continue;
+      const t = new Thruster();
+      t.group.scale.setScalar(0.55);
+      mount.add(t.group);
+      this.thrusters.push(t);
     }
-    this.navLights.forEach((m) => (m.userData.base = m.color.clone()));
+    let ownGlow: THREE.MeshBasicMaterial | null = null;
+    model.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!mesh.isMesh) return;
+      const mat = mesh.material as THREE.Material;
+      if (mat.name === "EngineGlow") {
+        // one per-ship copy shared by all nozzles: the glow follows this ship's throttle
+        if (!ownGlow) {
+          ownGlow = (mat as THREE.MeshBasicMaterial).clone();
+          this.thruster.setGlowMaterial(ownGlow);
+        }
+        mesh.material = ownGlow;
+      } else if (mat.name === "NavRed" || mat.name === "NavGreen") {
+        if (!this.navLights.includes(mat as THREE.MeshBasicMaterial)) this.navLights.push(mat as THREE.MeshBasicMaterial);
+      }
+    });
   }
+
+  /** Visual-only update shared by the local and remote ships. */
+  animate(dt: number, time: number, throttle: number, boost: boolean, vel: THREE.Vector3, bankTarget: number) {
+    this.bankGroup.rotation.z += (bankTarget - this.bankGroup.rotation.z) * Math.min(1, 8 * dt);
+    const blink = (time % 1.2) < 0.12 ? 1 : 0.15;
+    for (const m of this.navLights) m.color.copy(m.userData.base).multiplyScalar(blink);
+    this.root.updateMatrixWorld();
+    for (const t of this.thrusters) t.update(dt, time, throttle, boost, vel);
+  }
+}
+
+/** The local player's ship: assisted flight model on top of a ShipVisual. */
+export class Ship {
+  readonly visual: ShipVisual;
+  readonly root: THREE.Group;
+  readonly velocity = new THREE.Vector3();
+  heading = 0;
+  private angVel = 0;
+  throttle = 0;
+  boosting = false;
+  readonly radius = 1.3; // collision radius on the XZ plane (hauler with outrigger pods)
+  controlsEnabled = true; // false while docked
+  boostMax = 2; // seconds of boost (upgradable)
+  boostEnergy = 2;
+
+  constructor(visual: ShipVisual) {
+    this.visual = visual;
+    this.root = visual.root;
+  }
+
+  get thruster() { return this.visual.thruster; }
+  get drillMounts() { return this.visual.drillMounts; }
 
   get forward(): THREE.Vector3 {
     return new THREE.Vector3(-Math.sin(this.heading), 0, -Math.cos(this.heading));
@@ -151,14 +206,8 @@ export class Ship {
     this.root.position.addScaledVector(this.velocity, dt);
     this.root.rotation.y = this.heading;
 
+    this.boosting = boost;
     const bankTarget = THREE.MathUtils.clamp(this.angVel * F.bank, -F.maxBank, F.maxBank);
-    this.bankGroup.rotation.z += (bankTarget - this.bankGroup.rotation.z) * Math.min(1, 8 * dt);
-
-    // blinking navigation lights
-    const blink = (time % 1.2) < 0.12 ? 1 : 0.15;
-    for (const m of this.navLights) m.color.copy(m.userData.base).multiplyScalar(blink);
-
-    this.root.updateMatrixWorld();
-    this.thruster.update(dt, time, this.throttle, boost, this.velocity);
+    this.visual.animate(dt, time, this.throttle, boost, this.velocity, bankTarget);
   }
 }

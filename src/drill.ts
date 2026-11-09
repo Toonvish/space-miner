@@ -6,7 +6,6 @@ import { glowTexture } from "./particles";
 export const DRILL = {
   range: 11, // base reach from ship centre to asteroid surface (Beam Optics upgrades it)
   cone: THREE.MathUtils.degToRad(38), // auto-aim half angle in front of the ship
-  dps: 24, // damage per second (asteroid hp = 8 * r²)
   beamWidth: 0.16,
   rampUp: 8, // how fast the beam reaches full power
 };
@@ -182,11 +181,7 @@ export class Drill {
       this.hitLight.intensity = 6 * this.power;
       fx.drillImpact(end, normal, dt);
       t.shake = Math.max(t.shake, 0.06);
-      t.hp -= DRILL.dps * this.dpsMul * this.power * dt;
-      if (t.hp <= 0) {
-        result.destroyed = t;
-        this.target = null;
-      }
+      // damage is applied by the server (it validates range); see World.tick
     }
     return result;
   }

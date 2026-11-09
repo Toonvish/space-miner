@@ -2,6 +2,7 @@
 
 Run via `bun run models station`.
 Exports root empties "Core", "CargoModule", "DrillModule", "FuelModule", "TractorModule", "RangeModule",
+"PortModule", "DroneBayModule",
 all at the origin. Each module piece = truss + pod, built along +X from x=0 to x=MODULE_LEN,
 so the game can chain pieces outward along an arm. Each part has its own baked atlas
 ("<Part>Body" material). Emissive materials end in "Glow" (rendered unlit in the game).
@@ -43,6 +44,7 @@ def mat(key):
             "olive": lambda: L.detail_mat("Olive", L.srgb("#5c5a33"), 0.1, 0.55, panel=3.0, grime=0.4),
             "metal": lambda: L.detail_mat("Metal", L.srgb("#4a4e55"), 0.85, 0.38, panel=2.5, grime=0.5),
             "dark": lambda: L.detail_mat("Dark", L.srgb("#24262b"), 0.7, 0.55, panel=3.0, grime=0.3),
+            "hazard": lambda: L.hazard_mat("Hazard", scale=5.0),
         }[key]()
     return MATS[key]
 
@@ -218,6 +220,35 @@ def build_range(p):
     p.add(torus("MirrorRing", 0.78, 0.05, (POD_X, 0, 0.08), 24, 6), "accent")
 
 
+def build_port(p):
+    """Extra docking port: a landing pad with hazard rim, guide lights and a control mast."""
+    truss(p, 0, TRUSS_LEN)
+    p.add(L.bevel(cyl_z("PadBase", 1.55, 1.45, 0.35, (POD_X, 0, 0), 16), 0.03), "metal", angle=40)
+    p.add(cyl_z("PadRim", 1.5, 1.5, 0.08, (POD_X, 0, 0.21), 32), "hazard")
+    p.add(cyl_z("Pad", 1.2, 1.2, 0.1, (POD_X, 0, 0.22), 32), "dark")
+    p.add(L.obox("Mark", (POD_X, 0, 0.28), (1.4, 0.12, 0.02)), "white", False)
+    p.add(L.obox("Mark2", (POD_X, 0, 0.28), (0.12, 1.4, 0.02)), "white", False)
+    for k in range(8):
+        a = k * math.tau / 8
+        p.glow(L.obox("PadLight", (POD_X + math.cos(a) * 1.35, math.sin(a) * 1.35, 0.27), (0.1, 0.1, 0.04)), "pad")
+    p.add(cyl_z("Mast", 0.07, 0.05, 1.1, (POD_X + 1.15, 1.15, 0.6), 8), "metal")
+    p.glow(L.ellipsoid("MastLight", (POD_X + 1.15, 1.15, 1.2), (0.08, 0.08, 0.08), 8, 4), "beacon")
+
+
+def build_dronebay(p):
+    """Drone bay: an open cradle with clamps where a cargo drone parks between runs."""
+    truss(p, 0, TRUSS_LEN)
+    p.add(L.bevel(L.box("Deck", (POD_X, 0, -0.1), (2.2, 2.0, 0.3)), 0.04), "paint", angle=40)
+    p.add(L.box("Cradle", (POD_X, 0, 0.08), (1.6, 1.4, 0.06)), "hazard", False)
+    p.add(L.box("Well", (POD_X, 0, 0.1), (1.3, 1.1, 0.06)), "dark", False)
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            p.add(L.obox("Clamp", (POD_X + sx * 0.85, sy * 0.75, 0.3), (0.18, 0.18, 0.45)), "metal", False)
+    p.add(L.bevel(L.box("Hangar", (POD_X + 0.95, 0, 0.45), (0.3, 2.0, 0.9)), 0.03), "white", angle=40)
+    for sy in (-1, 1):
+        p.glow(L.obox("Flood", (POD_X + 0.78, sy * 0.8, 0.8), (0.06, 0.3, 0.1)), "window")
+
+
 # ---------------------------------------------------------------- build, bake, export
 tex_dir = os.path.join(args["previews"], "tex")
 parts = []
@@ -228,6 +259,8 @@ for i, (name, fn, size) in enumerate([
     ("FuelModule", build_fuel, 512),
     ("TractorModule", build_tractor, 512),
     ("RangeModule", build_range, 512),
+    ("PortModule", build_port, 512),
+    ("DroneBayModule", build_dronebay, 512),
 ]):
     p = Part(name, i * 14.0)
     fn(p)
@@ -253,7 +286,8 @@ def place_copy(src_root, loc, rot_z):
     return new_root
 
 levels = {"CargoModule": (0, 3), "DrillModule": (math.pi / 2, 2), "FuelModule": (math.pi, 1),
-          "TractorModule": (-math.pi / 2, 2), "RangeModule": (math.pi / 4, 2)}
+          "TractorModule": (-math.pi / 2, 2), "RangeModule": (math.pi / 4, 2),
+          "PortModule": (3 * math.pi / 4, 2), "DroneBayModule": (-3 * math.pi / 4, 2)}
 for p in parts[1:]:
     rot, n = levels[p.name]
     for k in range(n):

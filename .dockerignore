@@ -1,0 +1,8 @@
+node_modules
+dist
+server-data
+assets-src
+tools/blender/previews
+**/__pycache__
+.git
+*.blend1

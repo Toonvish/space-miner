@@ -1,6 +1,12 @@
 import type { Asteroid } from "./asteroids";
 import type { Miner } from "./miners";
-import { MINER } from "./upgrades";
+import { MINER } from "../shared/upgrades";
+
+export interface RadarExtras {
+  pilots: { x: number; z: number; hue: number }[];
+  drones: { x: number; z: number }[];
+  sectorRadius: number;
+}
 
 export const RADAR = {
   range: 90, // world units from the ship to the radar edge
@@ -32,6 +38,7 @@ export class Radar {
     ship: { x: number; z: number; heading: number },
     asteroids: Asteroid[], ore: Blip[], target: Asteroid | null,
     drillRange: number, time: number, station: Blip, miners: Miner[] = [],
+    extras: RadarExtras = { pilots: [], drones: [], sectorRadius: 0 },
   ) {
     const g = this.ctx;
     const s = RADAR.size;
@@ -129,7 +136,36 @@ export class Radar {
       g.fillStyle = "rgba(255,255,255,0.25)";
       g.fillRect(x - 5, y + 6, 10, 2);
       g.fillStyle = col;
-      g.fillRect(x - 5, y + 6, 10 * Math.min(1, m.save.stored / MINER.capacity), 2);
+      g.fillRect(x - 5, y + 6, 10 * Math.min(1, m.stored / MINER.capacity), 2);
+    }
+
+    // sector boundary
+    if (extras.sectorRadius > 0) {
+      const bx = (0 - ship.x) * k, by = (0 - ship.z) * k;
+      g.strokeStyle = "rgba(255, 90, 74, 0.5)";
+      g.setLineDash([2, 4]);
+      g.beginPath();
+      g.arc(bx, by, extras.sectorRadius * k, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+    }
+
+    // cargo drones: small white dots
+    g.fillStyle = "#e8eef5";
+    for (const d of extras.drones) {
+      const x = (d.x - ship.x) * k, y = (d.z - ship.z) * k;
+      if (x * x + y * y < R * R) g.fillRect(x - 1.5, y - 1.5, 3, 3);
+    }
+
+    // other pilots: coloured triangles
+    for (const o of extras.pilots) {
+      const x = (o.x - ship.x) * k, y = (o.z - ship.z) * k;
+      if (x * x + y * y > (R - 3) ** 2) continue;
+      g.fillStyle = `hsl(${o.hue}, 90%, 65%)`;
+      g.beginPath();
+      g.moveTo(x, y - 4); g.lineTo(x + 3.5, y + 3); g.lineTo(x - 3.5, y + 3);
+      g.closePath();
+      g.fill();
     }
 
     // home station: square icon, pinned to the rim with an arrow when out of range
