@@ -4,7 +4,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
-import { SECTOR, STATION, armPodPos } from "../shared/config";
+import { PILOT_COLORS, SECTOR, STATION, armPodPos } from "../shared/config";
 import type { BoomMsg, BuiltMsg, SnapMsg, ToastMsg } from "../shared/schema";
 import { MINER, MODULES, MODULE_ORDER, levelOf, stats, type ModuleId } from "../shared/upgrades";
 import { AsteroidField } from "./asteroids";
@@ -64,7 +64,7 @@ scene.add(stars.group);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.45, 0.5, 0.95));
+composer.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.35, 0.45, 0.95));
 composer.addPass(new OutputPass());
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight;
@@ -154,6 +154,7 @@ function toast(text: string) {
 menu = new StationMenu(document.body, {
   build: (module) => net.send("build", { module }),
   buyMiner: () => net.send("buyMiner"),
+  setColor: (color) => net.send("setColor", { color }),
   undock: () => net.send("undock"),
 }, shipTemplate);
 
@@ -205,6 +206,7 @@ function frame(now?: number) {
   const serverNow = net.serverTime();
   const me = net.me;
   const st = stats(state.station.levels);
+  if (me) ship.visual.setAccent(me.color);
 
   // docking transitions are driven by the server (port assignment)
   const nowDocked = !!me && me.port >= 0;
@@ -313,7 +315,7 @@ function frame(now?: number) {
 
   const names: string[] = [];
   state.players.forEach((pl, sid) => names.push(
-    `<span style="color:hsl(${pl.hue},90%,72%)">${sid === net.sessionId ? "▸ " : ""}${pl.name.replace(/</g, "")}</span>`));
+    `<span style="color:${PILOT_COLORS[pl.color % PILOT_COLORS.length].hex}">${sid === net.sessionId ? "▸ " : ""}${pl.name.replace(/</g, "")}</span>`));
   pilotsEl.innerHTML = `PILOTS ${state.players.size}<br>${names.join("<br>")}`;
 
   const tgt = drill.target;
@@ -331,9 +333,9 @@ function frame(now?: number) {
   remotes.updateLabels(camera);
   menu!.update(dt, state, net.sessionId, p);
 
-  const pilots: { x: number; z: number; hue: number }[] = [];
+  const pilots: { x: number; z: number; color: string }[] = [];
   const droneDots: { x: number; z: number }[] = [];
-  state.players.forEach((pl, sid) => { if (sid !== net.sessionId) pilots.push({ x: pl.x, z: pl.z, hue: pl.hue }); });
+  state.players.forEach((pl, sid) => { if (sid !== net.sessionId) pilots.push({ x: pl.x, z: pl.z, color: PILOT_COLORS[pl.color % PILOT_COLORS.length].hex }); });
   for (const d of drones.list) droneDots.push({ x: d.pos.x, z: d.pos.z });
   radar.draw({ x: p.x, z: p.z, heading: ship.heading }, field.list, ore.positions, drill.target, drill.range, t,
     { x: 0, z: 0 }, fleet.list, { pilots, drones: droneDots, sectorRadius: SECTOR.radius });

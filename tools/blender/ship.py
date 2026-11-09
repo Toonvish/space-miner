@@ -1,10 +1,10 @@
-"""Player ship — MK-II ore hauler "Kestrel". Industrial, low-poly, baked textures.
+"""Player ship — "Kestrel" heavy mining frigate. Dark, layered hard-surface armour.
 
 Run via `bun run models ship`.
 Blender coords (Z up): nose +Y, engines -Y. After glTF export: nose -Z, engines +Z.
-Game-facing names: material "Body" (baked atlas), "Glass", "EngineGlow", "NavRed", "NavGreen";
-empties "ThrusterMount" (main engine), "ThrusterMountL"/"ThrusterMountR" (pod engines),
-"DrillMountL"/"DrillMountR" (mining laser muzzles).
+Game-facing names: material "Body" (baked atlas), "Accent" (near-white trim, tinted per pilot), "Glass", "EngineGlow", "NavRed", "NavGreen",
+other "*Glow" materials (running lights); empties "ThrusterMount" (centre engine pair),
+"ThrusterMountL"/"ThrusterMountR" (sponson engine pairs), "DrillMountL"/"DrillMountR".
 """
 
 import math
@@ -21,25 +21,29 @@ L.reset_scene()
 root = L.link(bpy.data.objects.new("Ship", None))
 
 # ---------------------------------------------------------------- bake-source materials
-HULL = L.detail_mat("Hull", L.srgb("#c3c5c3"), metal=0.2, rough=0.45, panel=1.6, wear=0.6)
-FRAME = L.detail_mat("Frame", L.srgb("#34373c"), metal=0.75, rough=0.42, panel=3.5, grime=0.5)
-ACCENT = L.detail_mat("Accent", L.srgb("#e09a08"), metal=0.15, rough=0.5, panel=2.2, grime=0.25)
-HAZARD = L.hazard_mat("Hazard", scale=7.0)
-DARK = L.detail_mat("Dark", L.srgb("#1d1f23"), metal=0.6, rough=0.6, panel=6.0, grime=0.25)
+# dark gunmetal with bright worn edges so the faceted shapes read against space
+HULL = L.detail_mat("Hull", L.srgb("#24211f"), metal=0.25, rough=0.62, panel=1.2, grime=0.35, wear=0.3)
+PLATE = L.detail_mat("Plate", L.srgb("#141316"), metal=0.3, rough=0.55, panel=1.7, grime=0.3, wear=0.35)
+# near-white so the game can tint it with each pilot's colour (material "Accent")
+TRIM = L.detail_mat("Trim", L.srgb("#e6e6e6"), metal=0.3, rough=0.35, panel=4.0, grime=0.25)
+DARK = L.detail_mat("Dark", L.srgb("#151517"), metal=0.6, rough=0.55, panel=6.0, grime=0.2)
+VENT = L.detail_mat("Vent", L.srgb("#45413d"), metal=0.7, rough=0.4, panel=9.0, grime=0.5)
 
-GLASS = L.plain_mat("Glass", L.srgb("#0d1a22"), metal=0.0, rough=0.06)
-GLOW = L.plain_mat("EngineGlow", L.srgb("#bfefff"), emission=L.srgb("#8fdcff"), strength=6.0)
-NAV_R = L.plain_mat("NavRed", L.srgb("#ff2a2a"), emission=L.srgb("#ff2a2a"), strength=5.0)
-NAV_G = L.plain_mat("NavGreen", L.srgb("#2aff6a"), emission=L.srgb("#2aff6a"), strength=5.0)
+GLASS = L.plain_mat("Glass", L.srgb("#0c1820"), metal=0.0, rough=0.05)
+GLOW = L.plain_mat("EngineGlow", L.srgb("#cfefff"), emission=L.srgb("#8fd0ff"), strength=7.0)
+NAV_R = L.plain_mat("NavRed", L.srgb("#ff3020"), emission=L.srgb("#ff3020"), strength=5.0)
+NAV_G = L.plain_mat("NavGreen", L.srgb("#30ff70"), emission=L.srgb("#30ff70"), strength=5.0)
+AMBER = L.plain_mat("RunGlow", L.srgb("#ffb050"), emission=L.srgb("#ff9a30"), strength=5.0)
 
 textured = []
+accent = []  # baked separately into the tintable "Accent" material
 
 
-def part(obj, mat, smooth=True, angle=35):
+def part(obj, mat, smooth=True, angle=25):
     obj.parent = root
     L.set_mat(obj, mat)
     L.shade(obj, smooth, angle)
-    textured.append(obj)
+    (accent if mat is TRIM else textured).append(obj)
     return obj
 
 
@@ -49,97 +53,113 @@ def plain(obj, mat):
     return obj
 
 
-def cyl_z(name, r1, r2, depth, center, segments=12, cap=True):
+def plate(name, pts, z0, z1, mat, bevel=0.012, mirror=False):
+    """Faceted armour plate from a top-down outline. `mirror` adds the -X twin."""
+    sides = ((1, ""), (-1, "L")) if mirror else ((1, ""),)
+    out = []
+    for sx, suffix in sides:
+        o = L.prism(name + suffix, [(x * sx, y) for x, y in pts], z0, z1)
+        out.append(part(L.bevel(o, bevel), mat, smooth=False))
+    return out
+
+
+def cyl_z(name, r1, r2, depth, center, segments=10):
     bm = bmesh.new()
-    bmesh.ops.create_cone(bm, cap_ends=cap, cap_tris=False, segments=segments,
+    bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=segments,
                           radius1=r1, radius2=r2, depth=depth)
     bmesh.ops.translate(bm, verts=bm.verts, vec=center)
     return L.mesh_obj(name, bm)
 
 
-def nozzle(name, r_back, r_front, depth, y_center, x=0.0, z=0.0):
-    housing = L.cylinder_y(name + "Housing", r_front * 1.1, r_front * 1.15, depth * 0.8, y_center + depth * 0.75, 12)
+def nozzle(name, r, y, x, z=0.0):
+    """Recessed engine bell with a glowing core, facing -Y."""
+    housing = L.cylinder_y(name + "Housing", r * 1.3, r * 1.25, 0.22, y + 0.16, 8)
     housing.location = (x, 0, z)
-    part(L.bevel(housing, 0.015), FRAME)
-    bell = L.cylinder_y(name + "Bell", r_back, r_front, depth, y_center, 12, cap=False)
+    part(L.bevel(housing, 0.012), PLATE, smooth=False)
+    bell = L.cylinder_y(name + "Bell", r * 1.15, r * 0.9, 0.16, y, 12, cap=False)
     bell.location = (x, 0, z)
-    part(L.solidify(bell, 0.025), DARK)
+    part(L.solidify(bell, 0.02), DARK)
     bm = bmesh.new()
-    bmesh.ops.create_circle(bm, cap_ends=True, segments=12, radius=r_front * 0.95)
+    bmesh.ops.create_circle(bm, cap_ends=True, segments=12, radius=r * 0.88)
     bmesh.ops.rotate(bm, verts=bm.verts, cent=(0, 0, 0), matrix=L.rot_x(90))
-    bmesh.ops.translate(bm, verts=bm.verts, vec=(x, y_center + depth * 0.35, z))
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(x, y + 0.05, z))
     plain(L.mesh_obj(name + "Glow", bm), GLOW)
 
 
-# ---------------------------------------------------------------- spine
-PROFILE = [(1.0, -0.1), (0.85, 0.55), (0.45, 0.85), (-0.45, 0.85), (-0.85, 0.55),
-           (-1.0, -0.1), (-0.8, -0.6), (-0.35, -0.8), (0.35, -0.8), (0.8, -0.6)]
-spine = L.loft_y("Spine", PROFILE, [
-    (1.25, 0.26, 0.2, 0.0), (0.7, 0.36, 0.26, 0.02), (-0.4, 0.4, 0.28, 0.02),
-    (-1.15, 0.38, 0.27, 0.01), (-1.45, 0.32, 0.24, 0.0),
-])
-part(spine, HULL, angle=30)
-# armoured nose wedge
-part(L.loft_y("Nose", PROFILE, [(1.75, 0.08, 0.06, -0.03), (1.25, 0.27, 0.21, 0.0)],
-              tip=(0, 1.85, -0.04)), FRAME, angle=30)
+def spike(name, base, length, yaw_deg, pitch_deg, r=0.018):
+    """Thin antenna spike swept backwards."""
+    o = L.cylinder_y(name, r, r * 0.4, length, -length / 2, 6)
+    o.location = base
+    o.rotation_euler = (math.radians(pitch_deg), 0, math.radians(yaw_deg))
+    part(o, PLATE)
+    return o
 
-# bridge: boxy raised cockpit block with a slanted window strip
-bridge = L.obox("Bridge", (0, 0.92, 0.3), (0.5, 0.62, 0.22))
-part(L.bevel(bridge, 0.04), HULL, angle=40)
-win = L.obox("Window", (0, 1.2, 0.33), (0.4, 0.08, 0.12), (math.radians(-35), 0, 0))
+
+# ---------------------------------------------------------------- core hull (wide, low, sharp chines)
+PROFILE = [(1.0, 0.0), (0.7, 0.75), (-0.7, 0.75), (-1.0, 0.0), (-0.75, -0.55), (0.75, -0.55)]
+part(L.loft_y("Hull", PROFILE, [
+    (1.3, 0.2, 0.1, 0.0), (0.6, 0.42, 0.2, 0.0), (-0.4, 0.58, 0.26, 0.0),
+    (-1.5, 0.62, 0.28, 0.0), (-1.9, 0.56, 0.24, 0.0),
+], tip=(0, 2.05, -0.02)), HULL, smooth=False)
+
+# layered dorsal armour, stepping up towards the stern
+plate("DeckFront", [(0, 1.75), (0.3, 1.05), (0.4, 0.25), (-0.4, 0.25), (-0.3, 1.05)], 0.1, 0.19, PLATE)
+plate("DeckMid", [(0.32, 0.55), (0.55, -0.35), (0.52, -1.35), (-0.52, -1.35), (-0.55, -0.35), (-0.32, 0.55)],
+      0.17, 0.32, HULL)
+plate("Crest", [(0.14, 0.3), (0.24, -0.95), (0.1, -1.25), (-0.1, -1.25), (-0.24, -0.95), (-0.14, 0.3)],
+      0.31, 0.43, PLATE)
+plate("CrestTrim", [(0.05, 0.15), (0.09, -1.0), (-0.09, -1.0), (-0.05, 0.15)], 0.43, 0.46, TRIM, 0.005)
+plate("SternDeck", [(0.6, -1.3), (0.62, -1.85), (-0.62, -1.85), (-0.6, -1.3)], 0.12, 0.26, PLATE)
+plate("ShoulderPlate", [(0.4, 0.2), (0.62, -0.25), (0.66, -1.1), (0.5, -0.9), (0.45, -0.2)], 0.25, 0.36, PLATE,
+      mirror=True)
+
+# cockpit: angled armoured block with a narrow window slit
+plate("Cockpit", [(0, 1.45), (0.18, 1.05), (0.2, 0.6), (-0.2, 0.6), (-0.18, 1.05)], 0.19, 0.3, HULL)
+win = L.obox("Window", (0, 1.12, 0.29), (0.22, 0.24, 0.03), (math.radians(-12), 0, 0))
 plain(win, GLASS)
-for sx in (-1, 1):
-    plain(L.obox("SideWindow", (0.252 * sx, 0.98, 0.33), (0.02, 0.3, 0.07)), GLASS)
-part(L.obox("BridgeBand", (0, 0.66, 0.3), (0.52, 0.08, 0.24)), HAZARD, False)
 
-# dorsal ore hatches + sensor mast
-for i, y in enumerate((0.2, -0.35)):
-    part(L.bevel(L.obox(f"Hatch{i}", (0, y, 0.3), (0.46, 0.42, 0.06)), 0.02), ACCENT, angle=40)
-    part(L.obox(f"HatchSeam{i}", (0, y, 0.335), (0.02, 0.4, 0.01)), DARK, False)
-part(cyl_z("Mast", 0.03, 0.02, 0.5, (-0.18, -0.85, 0.5), 6), FRAME)
-part(cyl_z("Dish", 0.13, 0.05, 0.05, (-0.18, -0.85, 0.75), 12), HULL)
+# vents and sensor blocks
+for i, (x, y, sx, sy) in enumerate([(0.36, -0.7, 0.16, 0.36), (-0.36, -0.7, 0.16, 0.36),
+                                     (0.0, -1.55, 0.5, 0.12), (0.28, 0.05, 0.1, 0.18), (-0.28, 0.05, 0.1, 0.18)]):
+    part(L.bevel(L.obox(f"Vent{i}", (x, y, 0.33 if i < 2 else 0.27), (sx, sy, 0.05)), 0.008), VENT, smooth=False)
 
-# ---------------------------------------------------------------- outrigger ore pods
-POD_X = 1.05
+# ---------------------------------------------------------------- sponsons, blades, mandibles
+SPONSON = [(0.55, 0.65), (1.0, 0.25), (1.22, -0.55), (1.18, -1.65), (0.72, -1.85), (0.55, -1.0)]
+plate("Sponson", SPONSON, -0.14, 0.14, HULL, 0.02, mirror=True)
+plate("SponsonTop", [(0.65, 0.4), (0.98, 0.1), (1.12, -0.6), (1.08, -1.5), (0.78, -1.62), (0.66, -0.9)],
+      0.14, 0.22, PLATE, mirror=True)
+plate("SponsonTrim", [(1.0, 0.05), (1.12, -0.6), (1.08, -0.9), (0.98, -0.3)], 0.22, 0.25, TRIM, 0.005,
+      mirror=True)
+plate("Blade", [(1.12, -0.25), (1.72, -1.05), (1.78, -1.45), (1.16, -1.15)], -0.03, 0.04, PLATE, 0.01, mirror=True)
+plate("BladeTrim", [(1.2, -0.3), (1.7, -0.98), (1.66, -1.06), (1.17, -0.4)], 0.04, 0.06, TRIM, 0.004, mirror=True)
+plate("BladeLower", [(1.1, -0.9), (1.5, -1.55), (1.48, -1.8), (1.1, -1.55)], -0.1, -0.04, HULL, 0.01, mirror=True)
+plate("Mandible", [(0.5, 0.55), (0.78, 1.45), (0.72, 1.82), (0.56, 1.78), (0.44, 0.95)], -0.08, 0.1, PLATE,
+      0.012, mirror=True)
+plate("MandibleTrim", [(0.6, 1.0), (0.74, 1.5), (0.68, 1.55), (0.56, 1.05)], 0.1, 0.13, TRIM, 0.005, mirror=True)
+
 for side, s in ((1, "R"), (-1, "L")):
-    x = POD_X * side
-    pod = L.obox("Pod" + s, (x, -0.2, 0.0), (0.5, 2.1, 0.42))
-    part(L.bevel(pod, 0.06, 2), HULL, angle=40)
-    part(L.obox("PodTop" + s, (x, -0.35, 0.215), (0.38, 1.3, 0.03)), FRAME, False)
-    part(L.obox("PodStripe" + s, (x, 0.6, 0.0), (0.52, 0.18, 0.44)), HAZARD, False)
-    part(L.obox("PodKeel" + s, (x, -0.2, -0.23), (0.3, 1.9, 0.06)), DARK, False)
-    # truss beams to the spine
-    for j, y in enumerate((0.45, -0.75)):
-        beam = L.obox(f"Beam{s}{j}", (x * 0.6, y, 0.02), (POD_X * 0.75, 0.16, 0.12))
-        part(beam, FRAME, False)
-        brace = L.obox(f"Brace{s}{j}", (x * 0.6, y, 0.02), (POD_X * 0.7, 0.05, 0.05), (0, 0, side * 0.6))
-        part(brace, DARK, False)
-    # radiator fin
-    fin = L.obox("Radiator" + s, (x + side * 0.42, -0.55, 0.0), (0.36, 0.9, 0.025))
-    part(fin, FRAME, False)
-    for k in range(4):
-        part(L.obox(f"FinRib{s}{k}", (x + side * 0.42, -0.9 + k * 0.23, 0.02), (0.34, 0.04, 0.02)), ACCENT, False)
-    # mining laser turret on the pod nose
-    part(cyl_z("TurretBase" + s, 0.17, 0.15, 0.12, (x, 0.95, 0.24), 10), FRAME)
-    head = L.obox("TurretHead" + s, (x, 1.0, 0.34), (0.2, 0.3, 0.12))
-    part(L.bevel(head, 0.02), ACCENT, angle=40)
-    barrel = L.cylinder_y("Barrel" + s, 0.035, 0.03, 0.42, 1.3, 8)
-    barrel.location = (x, 0, 0.34)
-    part(barrel, DARK)
-    # pod engine
-    nozzle("PodEngine" + s, 0.15, 0.11, 0.2, -1.42, x=x, z=0.0)
-    # nav light on the outer front corner
-    nav = L.ellipsoid("Nav" + s, (x + side * 0.27, 0.75, 0.05), (0.035, 0.05, 0.035), 8, 4)
-    plain(nav, NAV_G if side > 0 else NAV_R)
+    # mining laser emitter on the mandible tip
+    em = L.cylinder_y("Emitter" + s, 0.06, 0.04, 0.28, 1.78, 8)
+    em.location = (0.64 * side, 0, 0.02)
+    part(em, DARK)
+    # sponson engine pair
+    for k, dx in enumerate((-0.14, 0.14)):
+        nozzle(f"SponsonEngine{s}{k}", 0.1, -1.98, (0.95 + dx) * side, 0.0)
+    # antenna spikes and running lights
+    spike("Spike" + s, (0.58 * side, -1.1, 0.34), 0.9, 160 * side, -8)
+    spike("SpikeShort" + s, (1.05 * side, -1.2, 0.22), 0.55, 150 * side, -5)
+    plain(L.ellipsoid("Run" + s, (1.76 * side, -1.42, 0.05), (0.035, 0.035, 0.035), 8, 4), AMBER)
+    plain(L.ellipsoid("RunTail" + s, (0.58 * side, -1.88, 0.3), (0.03, 0.03, 0.03), 8, 4), AMBER)
+    plain(L.ellipsoid("Nav" + s, (1.02 * side, 0.22, 0.16), (0.035, 0.05, 0.03), 8, 4), NAV_G if side > 0 else NAV_R)
 
-# ---------------------------------------------------------------- main engine
-nozzle("Main", 0.27, 0.2, 0.3, -1.62)
-part(L.obox("EngineCollar", (0, -1.36, 0.0), (0.62, 0.12, 0.36)), HAZARD, False)
+# centre engine pair
+for k, x in enumerate((-0.2, 0.2)):
+    nozzle(f"MainEngine{k}", 0.15, -2.05, x, 0.04)
 
 # ---------------------------------------------------------------- mounts
-for name, loc in [("ThrusterMount", (0, -1.8, 0)),
-                  ("ThrusterMountL", (-POD_X, -1.55, 0)), ("ThrusterMountR", (POD_X, -1.55, 0)),
-                  ("DrillMountL", (-POD_X, 1.52, 0.34)), ("DrillMountR", (POD_X, 1.52, 0.34))]:
+for name, loc in [("ThrusterMount", (0, -2.18, 0.04)),
+                  ("ThrusterMountL", (-0.95, -2.1, 0)), ("ThrusterMountR", (0.95, -2.1, 0)),
+                  ("DrillMountL", (-0.64, 1.95, 0.02)), ("DrillMountR", (0.64, 1.95, 0.02))]:
     e = L.link(bpy.data.objects.new(name, None), root)
     e.location = loc
 
@@ -148,9 +168,13 @@ body = L.join(textured, "Body")
 body.parent = root
 L.unwrap(body)
 L.bake_atlas(body, "ship", os.path.join(args["previews"], "tex"), size=1024)
+trim = L.join(accent, "AccentTrim")
+trim.parent = root
+L.unwrap(trim)
+L.bake_atlas(trim, "ship_accent", os.path.join(args["previews"], "tex"), size=256, mat_name="Accent")
 L.export(args)
 L.render_previews(args, [
-    ("top", (0, 0, 10), (0, 0, 0), 4.6),
-    ("persp", (3.4, -3.4, 2.6), (0, -0.1, 0), None),
-    ("front", (-2.8, 3.6, 1.7), (0, 0.1, 0), None),
+    ("top", (0, -0.1, 10), (0, -0.1, 0), 4.8),
+    ("persp", (-3.4, -3.6, 2.4), (0, -0.2, 0), None),
+    ("front", (2.8, 3.8, 1.8), (0, 0.1, 0), None),
 ])

@@ -91,3 +91,22 @@ export function armPodPos(angle: number, index: number): { x: number; z: number 
   // Blender +X arm direction maps to (cos a, 0, -sin a) in three.js
   return { x: Math.cos(angle) * r, z: -Math.sin(angle) * r };
 }
+
+/**
+ * Pilot highlight colours (ship trim, name tag, radar marker). Every connected pilot
+ * holds a different one, so the room is capped at this many pilots.
+ */
+export const PILOT_COLORS = [
+  { name: "Signal Orange", hex: "#ff7a1a" },
+  { name: "Cobalt", hex: "#2f7bff" },
+  { name: "Viridian", hex: "#22d17a" },
+  { name: "Crimson", hex: "#e8243c" },
+  { name: "Solar Yellow", hex: "#ffd21f" },
+  { name: "Ion Cyan", hex: "#1fe0e8" },
+  { name: "Violet", hex: "#9b4dff" },
+  { name: "Magenta", hex: "#ff3fb4" },
+  { name: "Lime", hex: "#a6f02a" },
+  { name: "Arctic White", hex: "#e8eef5" },
+  { name: "Copper", hex: "#c8743a" },
+  { name: "Rose Gold", hex: "#f2a7a0" },
+] as const;

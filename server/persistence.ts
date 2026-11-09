@@ -12,6 +12,7 @@ export interface WorldSave {
 
 export interface PlayerSave {
   name: string;
+  color?: number; // preferred PILOT_COLORS index
   cargo: number;
   minerStock: number;
   x: number;

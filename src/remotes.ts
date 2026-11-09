@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { PlayerState } from "../shared/schema";
+import { PILOT_COLORS } from "../shared/config";
 import type { AsteroidField } from "./asteroids";
 import { makeBeam, placeBeam } from "./drill";
 import type { Effects } from "./fx";
@@ -17,7 +18,7 @@ interface Remote {
   beamPower: number;
   label: HTMLElement;
   name: string;
-  hue: number;
+  color: number;
 }
 
 interface MapLike<T> {
@@ -44,11 +45,10 @@ export class RemoteShips {
     label.className = "pilot-label";
     this.labels.appendChild(label);
     const r: Remote = {
-      id, visual, beams, label, name: s.name, hue: s.hue,
+      id, visual, beams, label, name: s.name, color: -1,
       pos: new THREE.Vector3(s.x, 0, s.z), vel: new THREE.Vector3(), heading: s.h, turn: 0, beamPower: 0,
     };
     label.textContent = s.name;
-    label.style.color = `hsl(${s.hue}, 90%, 75%)`;
     this.byId.set(id, r);
     this.list.push(r);
     return r;
@@ -59,6 +59,11 @@ export class RemoteShips {
     states.forEach((s, id) => {
       if (id === selfId) return;
       const r = this.byId.get(id) ?? this.create(id, s);
+      if (r.color !== s.color) {
+        r.color = s.color;
+        r.visual.setAccent(s.color);
+        r.label.style.color = PILOT_COLORS[s.color % PILOT_COLORS.length].hex;
+      }
       r.vel.set(s.vx, 0, s.vz);
       // dead-reckon from the last update, then ease towards it
       const k = Math.min(1, 12 * dt);

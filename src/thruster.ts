@@ -97,13 +97,15 @@ export class Thruster {
   private prevOrigin = new THREE.Vector3();
   private hasPrev = false;
 
-  constructor() {
+  /** `light`: cast a small engine light on nearby geometry (keep it to one per ship). */
+  constructor(private hasLight = true, private gain = 1) {
     this.inner.renderOrder = 2;
     this.outer.renderOrder = 1;
     this.glow.position.z = 0.08;
-    this.light.position.z = 0.8;
+    this.light.position.z = 1.4;
     this.sparks.points.renderOrder = 3;
-    this.group.add(this.outer, this.inner, this.glow, this.light, this.sparks.points);
+    this.group.add(this.outer, this.inner, this.glow, this.sparks.points);
+    if (this.hasLight) this.group.add(this.light);
   }
 
   setGlowMaterial(mat: THREE.Material | undefined) {
@@ -125,10 +127,10 @@ export class Thruster {
     for (const [m, p] of [[this.outer, 0.25 + power], [this.inner, 0.35 + power]] as const) {
       const u = (m.material as THREE.ShaderMaterial).uniforms;
       u.uTime.value = time;
-      u.uPower.value = p;
+      u.uPower.value = p * this.gain;
     }
-    this.glow.scale.setScalar((0.22 + power * 0.45) * flick);
-    this.light.intensity = (0.2 + power * 2.2) * flick;
+    this.glow.scale.setScalar((0.22 + power * 0.45) * flick * Math.sqrt(this.gain));
+    this.light.intensity = this.hasLight ? (0.1 + power * 1.2) * flick : 0;
     if (this.glowMat) this.glowMat.color.copy(this.glowBase).multiplyScalar(0.35 + power * 0.65);
 
     this.updateSparks(dt, power, len, width);

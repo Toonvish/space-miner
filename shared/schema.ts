@@ -8,7 +8,7 @@ import { schema, t, type SchemaType } from "@colyseus/schema";
 
 export const PlayerState = schema({
   name: t.string().default(""),
-  hue: t.uint16().default(0),
+  color: t.uint8().default(0), // index into PILOT_COLORS, unique per connected pilot
   x: t.float32().default(0),
   z: t.float32().default(0),
   h: t.float32().default(0), // heading (radians)

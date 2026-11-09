@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { Thruster } from "./thruster";
+import { PILOT_COLORS } from "../shared/config";
 import { input } from "./input";
 
 /**
@@ -42,7 +43,7 @@ export class ShipTemplate {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const src = mesh.material as THREE.MeshStandardMaterial;
-      if (GLOW.has(src.name)) {
+      if (GLOW.has(src.name) || /Glow$/.test(src.name)) {
         let m = glowMats.get(src.name);
         if (!m) {
           m = new THREE.MeshBasicMaterial({
@@ -81,6 +82,8 @@ export class ShipVisual {
   readonly thrusters: Thruster[] = [this.thruster]; // main + optional pod engines
   readonly drillMounts: THREE.Object3D[] = [];
   private navLights: THREE.MeshBasicMaterial[] = [];
+  private accent: THREE.MeshStandardMaterial | null = null;
+  private accentIndex = -1;
 
   /** World-space exhaust trails: add these to the scene. */
   get trails(): THREE.Points[] { return this.thrusters.map((t) => t.trail); }
@@ -97,7 +100,7 @@ export class ShipVisual {
     for (const n of ["ThrusterMountL", "ThrusterMountR"]) {
       const mount = model.getObjectByName(n);
       if (!mount) continue;
-      const t = new Thruster();
+      const t = new Thruster(false, 0.55); // dimmer pod plumes; only the main engine casts light
       t.group.scale.setScalar(0.55);
       mount.add(t.group);
       this.thrusters.push(t);
@@ -107,6 +110,12 @@ export class ShipVisual {
       const mesh = o as THREE.Mesh;
       if (!mesh.isMesh) return;
       const mat = mesh.material as THREE.Material;
+      if (mat.name === "Accent") {
+        // per-ship copy of the near-white trim, tinted with the pilot's colour
+        if (!this.accent) this.accent = (mat as THREE.MeshStandardMaterial).clone();
+        mesh.material = this.accent;
+        return;
+      }
       if (mat.name === "EngineGlow") {
         // one per-ship copy shared by all nozzles: the glow follows this ship's throttle
         if (!ownGlow) {
@@ -118,6 +127,16 @@ export class ShipVisual {
         if (!this.navLights.includes(mat as THREE.MeshBasicMaterial)) this.navLights.push(mat as THREE.MeshBasicMaterial);
       }
     });
+  }
+
+  /** Tint the trim with PILOT_COLORS[index] (no-op if unchanged). */
+  setAccent(index: number) {
+    if (!this.accent || index === this.accentIndex) return;
+    this.accentIndex = index;
+    const c = PILOT_COLORS[index % PILOT_COLORS.length];
+    this.accent.color.set(c.hex);
+    // faint self-glow so the colour reads in shadow as well
+    this.accent.emissive.set(c.hex).multiplyScalar(0.12);
   }
 
   /** Visual-only update shared by the local and remote ships. */

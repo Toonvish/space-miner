@@ -1,5 +1,5 @@
 import {
-  ASTEROID, DRILL, DRONE, ORE, SECTOR, SHIP, STATION, armPodPos, asteroidPosAt, asteroidVelAt,
+  ASTEROID, DRILL, DRONE, ORE, PILOT_COLORS, SECTOR, SHIP, STATION, armPodPos, asteroidPosAt, asteroidVelAt,
 } from "../shared/config";
 import {
   AsteroidState, DRONE_STATUS, DroneState, MINER_STATUS, MinerState, OreState, PlayerState,
@@ -79,10 +79,23 @@ export class World {
   }
 
   // ------------------------------------------------------------------ players
-  addPlayer(sessionId: string, name: string, hue: number, save?: PlayerSave): PlayerState {
+  /** Colour indices held by connected pilots (optionally ignoring one session). */
+  private takenColors(except?: string): Set<number> {
+    const taken = new Set<number>();
+    this.state.players.forEach((p, sid) => { if (sid !== except) taken.add(p.color); });
+    return taken;
+  }
+
+  addPlayer(sessionId: string, name: string, fallbackColor: number, save?: PlayerSave): PlayerState {
     const p = new PlayerState();
     p.name = name;
-    p.hue = hue;
+    // keep the pilot's previous colour if it is free, otherwise take the first free one
+    const taken = this.takenColors();
+    const n = PILOT_COLORS.length;
+    const wanted = Number.isInteger(save?.color) ? save!.color! : fallbackColor % n;
+    let color = wanted;
+    for (let k = 0; k < n && taken.has(color); k++) color = (wanted + k + 1) % n;
+    p.color = color;
     p.port = -1;
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
     p.cargo = Math.max(0, Math.min(Math.floor(num(save?.cargo)), this.stats.capacity));
@@ -98,7 +111,14 @@ export class World {
     if (!p) return null;
     this.freePort(`p:${sessionId}`);
     this.state.players.delete(sessionId);
-    return { name: p.name, cargo: p.cargo, minerStock: p.minerStock, x: p.x, z: p.z };
+    return { name: p.name, color: p.color, cargo: p.cargo, minerStock: p.minerStock, x: p.x, z: p.z };
+  }
+
+  setColor(sessionId: string, color: number) {
+    const p = this.state.players.get(sessionId);
+    if (!p || !Number.isInteger(color) || color < 0 || color >= PILOT_COLORS.length) return;
+    if (this.takenColors(sessionId).has(color)) return this.events.toast(sessionId, "That colour is taken by another pilot");
+    p.color = color;
   }
 
   /** Client-predicted movement; returns false if the jump is implausible (client gets snapped back). */

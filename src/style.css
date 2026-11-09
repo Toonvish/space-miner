@@ -138,6 +138,11 @@ canvas { display: block; }
 .st-row.sel { background: rgba(232, 163, 60, 0.12); border-left-color: var(--amber); }
 .st-row .nm { flex: 1; font-size: 17px; font-weight: 600; letter-spacing: 0.04em; }
 .st-row .nm small { display: block; font: 600 9px var(--mono); letter-spacing: 0.16em; color: var(--muted); }
+.st-row .meta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.st-row .price { font: 600 12px var(--mono); letter-spacing: 0.04em; }
+.st-row .price.ok { color: var(--amber-hi); }
+.st-row .price.short { color: #6f8296; }
+.st-row .price.max { color: var(--teal); letter-spacing: 0.16em; }
 .pips { display: flex; gap: 3px; }
 .pips i { width: 12px; height: 6px; background: rgba(255,255,255,0.14); transform: skewX(-20deg); }
 .pips i.on { background: var(--amber); box-shadow: 0 0 6px rgba(232, 163, 60, 0.6); }
@@ -192,3 +197,19 @@ canvas { display: block; }
 
 body.docked #hud, body.docked #cargo, body.docked #radar, body.docked #prompt,
 body.docked #pilots, body.docked #fps, body.docked #labels, body.docked #target { display: none; }
+
+/* pilot highlight colour picker */
+.swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin-top: 4px; }
+.swatch {
+  aspect-ratio: 1; border: 2px solid rgba(255,255,255,0.12); background: var(--c); cursor: pointer; position: relative;
+  clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%);
+}
+.swatch:hover { border-color: rgba(255,255,255,0.6); }
+.swatch.mine { border-color: #fff; box-shadow: inset 0 0 0 2px #000; }
+.swatch.taken { cursor: not-allowed; opacity: 0.35; }
+.swatch.taken::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(to top right, transparent 46%, #000 46%, #000 54%, transparent 54%);
+}
+.st-colorname { color: var(--ink); }
+.st-hint { margin-top: 8px; font: 12px var(--mono); color: var(--muted); }

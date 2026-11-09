@@ -3,7 +3,7 @@ import type { Miner } from "./miners";
 import { MINER } from "../shared/upgrades";
 
 export interface RadarExtras {
-  pilots: { x: number; z: number; hue: number }[];
+  pilots: { x: number; z: number; color: string }[];
   drones: { x: number; z: number }[];
   sectorRadius: number;
 }
@@ -161,7 +161,7 @@ export class Radar {
     for (const o of extras.pilots) {
       const x = (o.x - ship.x) * k, y = (o.z - ship.z) * k;
       if (x * x + y * y > (R - 3) ** 2) continue;
-      g.fillStyle = `hsl(${o.hue}, 90%, 65%)`;
+      g.fillStyle = o.color;
       g.beginPath();
       g.moveTo(x, y - 4); g.lineTo(x + 3.5, y + 3); g.lineTo(x - 3.5, y + 3);
       g.closePath();

@@ -1,5 +1,5 @@
 import { Room, type Client } from "@colyseus/core";
-import { NET, hash } from "../shared/config";
+import { NET, PILOT_COLORS, hash } from "../shared/config";
 import { SectorState, type MoveMsg } from "../shared/schema";
 import { MODULES, type ModuleId } from "../shared/upgrades";
 import { loadWorld, saveWorld, type PlayerSave } from "./persistence";
@@ -11,7 +11,7 @@ const TOKEN_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 /** One shared co-op sector. Every player joins the same room ("sector"). */
 export class SectorRoom extends Room<{ state: SectorState }> {
-  maxClients = 24;
+  maxClients = PILOT_COLORS.length; // every pilot has a unique colour
   state = new SectorState();
   private world!: World;
   private players: Record<string, PlayerSave> = {}; // saved players by token
@@ -52,6 +52,7 @@ export class SectorRoom extends Room<{ state: SectorState }> {
     });
     this.onMessage("buyMiner", (c) => this.world.buyMiner(c.sessionId));
     this.onMessage("minerAction", (c) => this.world.minerAction(c.sessionId));
+    this.onMessage("setColor", (c, m: { color?: number }) => this.world.setColor(c.sessionId, Number(m?.color)));
 
     // test helper, never enabled unless the server is started with SPACE_MINER_CHEATS=1
     if (process.env.SPACE_MINER_CHEATS === "1") {
@@ -78,7 +79,7 @@ export class SectorRoom extends Room<{ state: SectorState }> {
     }
     this.tokens.set(client.sessionId, token);
     const saved = this.players[token];
-    this.world.addPlayer(client.sessionId, name, hash(token) % 360, saved);
+    this.world.addPlayer(client.sessionId, name, hash(token), saved);
     this.lastMove.set(client.sessionId, this.state.time);
     console.log(`[room] ${name} joined (${this.clients.length} online)`);
   }
@@ -101,7 +102,7 @@ export class SectorRoom extends Room<{ state: SectorState }> {
     const players = { ...this.players };
     for (const [sid, token] of this.tokens) {
       const p = this.state.players.get(sid);
-      if (p) players[token] = { name: p.name, cargo: p.cargo, minerStock: p.minerStock, x: p.x, z: p.z };
+      if (p) players[token] = { name: p.name, color: p.color, cargo: p.cargo, minerStock: p.minerStock, x: p.x, z: p.z };
     }
     return saveWorld(this.world.snapshot(players));
   }

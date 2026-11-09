@@ -1,10 +1,10 @@
 import * as THREE from "three";
-import { DRONE } from "../shared/config";
+import { DRONE, PILOT_COLORS } from "../shared/config";
 import { DRONE_STATUS, MINER_STATUS, type SectorState } from "../shared/schema";
 import {
   MINER, MODULES, MODULE_ORDER, levelOf, maxLevel, minerCost, nextCost, stats, type ModuleId,
 } from "../shared/upgrades";
-import type { ShipTemplate } from "./ship";
+import type { ShipTemplate, ShipVisual } from "./ship";
 
 /** Flavour + help text for the station terminal. */
 const INFO: Record<ModuleId, { tag: string; desc: string }> = {
@@ -23,6 +23,7 @@ export interface StationActions {
   build(id: ModuleId): void;
   buyMiner(): void;
   undock(): void;
+  setColor(index: number): void;
 }
 
 /**
@@ -58,12 +59,13 @@ export class StationMenu {
       <div class="st-note"></div>`;
     this.el.addEventListener("mousedown", (e) => e.stopPropagation()); // mouse = drill in flight
     this.el.addEventListener("click", (e) => {
-      const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab],[data-sel],[data-a]");
+      const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tab],[data-sel],[data-a],[data-color]");
       if (!t) return;
       if (t.dataset.tab) { this.tab = t.dataset.tab as Tab; this.lastRender = ""; }
       if (t.dataset.sel) { this.selected = t.dataset.sel as ModuleId; this.lastRender = ""; }
       if (t.dataset.a === "build") this.actions.build(this.selected);
       if (t.dataset.a === "buyMiner") this.actions.buyMiner();
+      if (t.dataset.color && !t.classList.contains("taken")) this.actions.setColor(Number(t.dataset.color));
       if (t.dataset.a === "undock") this.actions.undock();
     });
     parent.appendChild(this.el);
@@ -128,7 +130,9 @@ export class StationMenu {
       s.miners.forEach((m, id) => (fleetSig += `${id}:${Math.floor(m.stored)}:${m.status};`));
       s.drones.forEach((d, id) => (fleetSig += `${id}:${d.status}:${Math.floor(d.cargo)};`));
     }
-    const sig = `${this.tab}|${this.selected}|${levels}|${Math.floor(st.stored)}|${st.minersBought}|${me?.minerStock}|${fleetSig}`;
+    let colorSig = "";
+    s.players.forEach((p, sid) => (colorSig += `${sid}:${p.color}:${p.name};`));
+    const sig = `${colorSig}|${this.tab}|${this.selected}|${levels}|${Math.floor(st.stored)}|${st.minersBought}|${me?.minerStock}|${fleetSig}`;
     if (sig !== this.lastRender) {
       this.lastRender = sig;
       const main = this.el.querySelector<HTMLElement>(".st-main")!;
@@ -136,8 +140,9 @@ export class StationMenu {
       if (this.tab === "modules") main.innerHTML = this.renderModules(s);
       else if (this.tab === "fleet") main.innerHTML = this.renderFleet(s, selfId, shipPos);
       else {
-        main.innerHTML = this.renderShip(s);
+        main.innerHTML = this.renderShip(s, selfId);
         if (!this.preview) this.preview = new ShipPreview(this.shipTemplate);
+        this.preview.setAccent(me?.color ?? 0);
         main.querySelector(".st-preview")!.appendChild(this.preview.canvas);
       }
     }
@@ -150,9 +155,13 @@ export class StationMenu {
       const lvl = levelOf(st.levels, id);
       const max = maxLevel(id);
       const pips = Array.from({ length: max }, (_, k) => `<i class="${k < lvl ? "on" : ""}"></i>`).join("");
+      const rowCost = nextCost(st.levels, id);
+      const price = lvl >= max
+        ? `<span class="price max">MAX</span>`
+        : `<span class="price ${st.stored >= rowCost ? "ok" : "short"}">${rowCost} ore</span>`;
       return `<button class="st-row ${id === this.selected ? "sel" : ""}" data-sel="${id}">
         <kbd>${i + 1}</kbd><span class="nm">${MODULES[id].name}<small>${INFO[id].tag}</small></span>
-        <span class="pips">${pips}</span></button>`;
+        <span class="meta"><span class="pips">${pips}</span>${price}</span></button>`;
     }).join("");
 
     const id = this.selected;
@@ -233,14 +242,27 @@ export class StationMenu {
       </section>`;
   }
 
-  private renderShip(s: SectorState): string {
+  private renderShip(s: SectorState, selfId: string): string {
     const st = stats(s.station.levels);
+    const mine = s.players.get(selfId)?.color ?? -1;
+    const owners = new Map<number, string>();
+    s.players.forEach((p, sid) => { if (sid !== selfId) owners.set(p.color, p.name); });
+    const swatches = PILOT_COLORS.map((c, i) => {
+      const owner = owners.get(i);
+      const cls = i === mine ? "mine" : owner !== undefined ? "taken" : "";
+      const title = owner !== undefined ? `${c.name} — taken by ${owner}` : c.name;
+      return `<button class="swatch ${cls}" data-color="${i}" style="--c:${c.hex}" title="${title.replace(/"/g, "")}"></button>`;
+    }).join("");
+    const mineName = mine >= 0 ? PILOT_COLORS[mine].name : "";
     const row = (k: string, v: string) => `<div class="st-kv"><span>${k}</span><b>${v}</b></div>`;
     return `
       <section class="st-list st-preview-wrap">
         <header>HANGAR</header>
         <div class="st-preview"></div>
-        <div class="st-kicker">HULL · MK-II ORE HAULER "KESTREL"</div>
+        <div class="st-kicker">HULL · HEAVY MINING FRIGATE "KESTREL"</div>
+        <header style="margin-top:16px">HIGHLIGHT COLOUR · <span class="st-colorname">${mineName}</span></header>
+        <div class="swatches">${swatches}</div>
+        <div class="st-hint">Each pilot flies a unique colour. Crossed-out colours are in use.</div>
       </section>
       <section class="st-detail">
         <div class="st-kicker">FITTING · STATION BONUSES APPLY TO ALL PILOTS</div>
@@ -263,6 +285,9 @@ class ShipPreview {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(30, 1, 0.1, 50);
   private pivot = new THREE.Group();
+  private visual!: ShipVisual;
+
+  setAccent(index: number) { this.visual.setAccent(index); }
 
   constructor(template: ShipTemplate) {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -271,6 +296,7 @@ class ShipPreview {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.canvas = this.renderer.domElement;
     const v = template.create();
+    this.visual = v;
     for (const t of v.thrusters) t.group.visible = false;
     this.pivot.add(v.root);
     this.scene.add(this.pivot);

@@ -53,7 +53,7 @@ export class DroneFleet {
     const model = this.template.clone(true);
     bank.add(model);
     root.add(bank);
-    const thruster = new Thruster();
+    const thruster = new Thruster(false);
     thruster.group.scale.setScalar(0.45);
     (model.getObjectByName("DroneThruster") ?? model).add(thruster.group);
     this.group.add(root);
