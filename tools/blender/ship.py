@@ -33,6 +33,7 @@ GLASS = L.plain_mat("Glass", L.srgb("#0c1820"), metal=0.0, rough=0.05)
 GLOW = L.plain_mat("EngineGlow", L.srgb("#cfefff"), emission=L.srgb("#8fd0ff"), strength=7.0)
 NAV_R = L.plain_mat("NavRed", L.srgb("#ff3020"), emission=L.srgb("#ff3020"), strength=5.0)
 NAV_G = L.plain_mat("NavGreen", L.srgb("#30ff70"), emission=L.srgb("#30ff70"), strength=5.0)
+LASER = L.plain_mat("LaserGlow", L.srgb("#ffd0a0"), emission=L.srgb("#ff7a2a"), strength=6.0)
 AMBER = L.plain_mat("RunGlow", L.srgb("#ffb050"), emission=L.srgb("#ff9a30"), strength=5.0)
 
 textured = []
@@ -95,6 +96,42 @@ def spike(name, base, length, yaw_deg, pitch_deg, r=0.018):
     return o
 
 
+def cannon(name, x, y_back, y_front, z, s=1.0, pylon_to=None):
+    """Mining laser cannon pointing +Y: receiver block, heat-sink fins, barrel with
+    focusing coils (accent colour), muzzle shroud and a glowing lens.
+    `pylon_to` = z of the surface above/below to attach a pylon strut to.
+    Returns the muzzle position (for the DrillMount empty)."""
+    length = y_front - y_back
+    rec_len = 0.38 * s
+    part(L.bevel(L.obox(name + "Receiver", (x, y_back + rec_len / 2, z), (0.17 * s, rec_len, 0.14 * s)), 0.015),
+         PLATE, smooth=False)
+    part(L.obox(name + "Cap", (x, y_back + rec_len * 0.45, z + 0.075 * s), (0.11 * s, rec_len * 0.7, 0.02 * s)),
+         VENT, smooth=False)
+    for k in range(3):  # heat-sink fins on the outside of the receiver
+        fy = y_back + 0.08 * s + k * 0.1 * s
+        for sx in (-1, 1):
+            part(L.obox(f"{name}Fin{k}{sx}", (x + sx * 0.1 * s, fy, z), (0.035 * s, 0.03 * s, 0.11 * s)), DARK, smooth=False)
+    b0 = y_back + rec_len
+    b1 = y_front - 0.1 * s
+    barrel = L.cylinder_y(name + "Barrel", 0.032 * s, 0.032 * s, b1 - b0, (b0 + b1) / 2, 8)
+    barrel.location = (x, 0, z)
+    part(barrel, DARK)
+    for k in range(3):
+        cy = b0 + (k + 0.6) * (b1 - b0) / 3.4
+        coil = L.cylinder_y(f"{name}Coil{k}", 0.058 * s, 0.058 * s, 0.045 * s, cy, 10)
+        coil.location = (x, 0, z)
+        part(coil, TRIM)
+    muzzle = L.cylinder_y(name + "Muzzle", 0.045 * s, 0.06 * s, 0.11 * s, y_front - 0.055 * s, 10)
+    muzzle.location = (x, 0, z)
+    part(muzzle, PLATE)
+    plain(L.ellipsoid(name + "Lens", (x, y_front + 0.002, z), (0.035 * s, 0.02 * s, 0.035 * s), 8, 4), LASER)
+    if pylon_to is not None:
+        h = abs(pylon_to - z)
+        part(L.obox(name + "Pylon", (x, y_back + rec_len * 0.5, (z + pylon_to) / 2), (0.05 * s, rec_len * 0.8, h)),
+             PLATE, smooth=False)
+    return (x, y_front + 0.06, z)
+
+
 # ---------------------------------------------------------------- core hull (wide, low, sharp chines)
 PROFILE = [(1.0, 0.0), (0.7, 0.75), (-0.7, 0.75), (-1.0, 0.0), (-0.75, -0.55), (0.75, -0.55)]
 part(L.loft_y("Hull", PROFILE, [
@@ -133,15 +170,30 @@ plate("SponsonTrim", [(1.0, 0.05), (1.12, -0.6), (1.08, -0.9), (0.98, -0.3)], 0.
 plate("Blade", [(1.12, -0.25), (1.72, -1.05), (1.78, -1.45), (1.16, -1.15)], -0.03, 0.04, PLATE, 0.01, mirror=True)
 plate("BladeTrim", [(1.2, -0.3), (1.7, -0.98), (1.66, -1.06), (1.17, -0.4)], 0.04, 0.06, TRIM, 0.004, mirror=True)
 plate("BladeLower", [(1.1, -0.9), (1.5, -1.55), (1.48, -1.8), (1.1, -1.55)], -0.1, -0.04, HULL, 0.01, mirror=True)
-plate("Mandible", [(0.5, 0.55), (0.78, 1.45), (0.72, 1.82), (0.56, 1.78), (0.44, 0.95)], -0.08, 0.1, PLATE,
-      0.012, mirror=True)
-plate("MandibleTrim", [(0.6, 1.0), (0.74, 1.5), (0.68, 1.55), (0.56, 1.05)], 0.1, 0.13, TRIM, 0.005, mirror=True)
+if os.environ.get("SHIP_LASER", "pylon") == "mandible":  # forward prongs only carry the nose-gun variant
+    plate("Mandible", [(0.5, 0.55), (0.78, 1.45), (0.72, 1.82), (0.56, 1.78), (0.44, 0.95)], -0.08, 0.1, PLATE,
+          0.012, mirror=True)
+    plate("MandibleTrim", [(0.6, 1.0), (0.74, 1.5), (0.68, 1.55), (0.56, 1.05)], 0.1, 0.13, TRIM, 0.005, mirror=True)
+
+# Mining laser placement — try variants with SHIP_LASER=<name> (see LASER_VARIANTS).
+LASER_VARIANTS = {
+    # name: (x, y_back, y_front, z, scale, pylon_to)
+    "mandible": (0.64, 1.25, 1.95, 0.16, 0.9, 0.1),     # on top of the forward mandibles (old spot)
+    "sponson": (1.02, -0.05, 1.05, 0.29, 1.0, 0.22),    # on the sponson nose, outboard of the hull
+    "pylon": (1.32, -0.75, 0.75, 0.0, 1.05, None),      # outer pylon along the sponson's outer edge
+    "wingtip": (1.8, -1.35, -0.2, 0.0, 0.95, None),     # on the blade tips, classic fighter wingtip guns
+}
+LASER_VARIANT = os.environ.get("SHIP_LASER", "pylon")
+lx, ly0, ly1, lz, lscale, lpylon = LASER_VARIANTS[LASER_VARIANT]
+muzzles = {}
 
 for side, s in ((1, "R"), (-1, "L")):
-    # mining laser emitter on the mandible tip
-    em = L.cylinder_y("Emitter" + s, 0.06, 0.04, 0.28, 1.78, 8)
-    em.location = (0.64 * side, 0, 0.02)
-    part(em, DARK)
+    muzzles[s] = cannon("Laser" + s, lx * side, ly0, ly1, lz, lscale, lpylon)
+    if LASER_VARIANT == "pylon":  # struts tying the outer gun to the sponson
+        for k, y in enumerate((-0.45, 0.1)):
+            part(L.obox(f"LaserStrut{s}{k}", ((lx - 0.12) * side, y, 0.0), (0.2, 0.08, 0.06)), DARK, smooth=False)
+    if LASER_VARIANT == "wingtip":  # fairing joining the blade tip to the gun
+        part(L.obox(f"LaserFairing{s}", ((lx - 0.06) * side, -1.15, 0.0), (0.12, 0.35, 0.08)), PLATE, smooth=False)
     # sponson engine pair
     for k, dx in enumerate((-0.14, 0.14)):
         nozzle(f"SponsonEngine{s}{k}", 0.1, -1.98, (0.95 + dx) * side, 0.0)
@@ -159,7 +211,7 @@ for k, x in enumerate((-0.2, 0.2)):
 # ---------------------------------------------------------------- mounts
 for name, loc in [("ThrusterMount", (0, -2.18, 0.04)),
                   ("ThrusterMountL", (-0.95, -2.1, 0)), ("ThrusterMountR", (0.95, -2.1, 0)),
-                  ("DrillMountL", (-0.64, 1.95, 0.02)), ("DrillMountR", (0.64, 1.95, 0.02))]:
+                  ("DrillMountL", muzzles["L"]), ("DrillMountR", muzzles["R"])]:
     e = L.link(bpy.data.objects.new(name, None), root)
     e.location = loc
 
@@ -177,4 +229,5 @@ L.render_previews(args, [
     ("top", (0, -0.1, 10), (0, -0.1, 0), 4.8),
     ("persp", (-3.4, -3.6, 2.4), (0, -0.2, 0), None),
     ("front", (2.8, 3.8, 1.8), (0, 0.1, 0), None),
+    ("game", (0, -3.6, 11), (0, 0, 0), None),  # roughly the in-game camera angle
 ])
