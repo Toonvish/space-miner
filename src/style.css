@@ -161,10 +161,10 @@ canvas { display: block; }
 .st-table td.empty { color: var(--muted); text-align: center; padding: 12px; }
 .st-table .bar { display: inline-block; width: 60px; height: 5px; margin-right: 8px; background: rgba(255,255,255,0.12); vertical-align: middle; }
 .st-table .bar i { display: block; height: 100%; background: #ffc04a; }
-.s-mining, .d-outbound, .d-returning { color: #6aff8e !important; }
+.s-mining, .s-moving, .d-outbound, .d-returning, .d-mining { color: #6aff8e !important; }
 .s-idle, .d-waiting { color: #ffd23a !important; }
 .s-full { color: #ff5a4a !important; }
-.d-loading, .d-unloading { color: var(--cyan) !important; }
+.d-unloading { color: var(--cyan) !important; }
 .st-build {
   display: flex; justify-content: space-between; align-items: center; width: 100%; padding: 12px 16px; border: 0; cursor: pointer;
   background: var(--amber); color: #120b02; font: 700 17px var(--display); letter-spacing: 0.16em;
@@ -213,3 +213,59 @@ body.docked #pilots, body.docked #fps, body.docked #labels, body.docked #target 
 }
 .st-colorname { color: var(--ink); }
 .st-hint { margin-top: 8px; font: 12px var(--mono); color: var(--muted); }
+
+/* fleet research rows */
+.st-research {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-bottom: 4px;
+  background: rgba(255,255,255,0.025); border-left: 3px solid rgba(232, 163, 60, 0.4);
+}
+.st-research > div { flex: 1; min-width: 0; }
+.st-research b { display: block; font: 600 15px var(--display); letter-spacing: 0.03em; }
+.st-research small { font: 11px var(--mono); color: var(--muted); }
+.st-research em { font-style: normal; color: var(--teal); }
+.st-mini {
+  border: 0; cursor: pointer; padding: 6px 9px; background: var(--amber); color: #120b02;
+  font: 700 11px var(--mono); white-space: nowrap;
+}
+.st-mini.off { background: rgba(255,255,255,0.1); color: #6f8296; cursor: not-allowed; }
+
+/* station: gear button, stat chips, requirement checks */
+.st-gear {
+  border: 0; border-left: 1px solid var(--line); background: none; color: var(--muted); cursor: pointer;
+  font-size: 22px; padding: 0 20px; margin-left: auto;
+}
+.st-gear:hover { color: var(--ink); }
+.st-gear + .st-undock { margin-left: 0; }
+.st-chips { display: flex; gap: 8px; margin: 8px 0 12px; flex-wrap: wrap; }
+.st-chips span { font: 600 10px var(--mono); letter-spacing: 0.12em; color: var(--muted); padding: 5px 9px; border: 1px solid var(--line); }
+.st-chips b { color: var(--ink); margin-left: 4px; }
+.st-sub { margin: 12px 0 2px; font: 600 10px var(--mono); letter-spacing: 0.18em; color: var(--muted); }
+.st-kv b.ok { color: #6aff8e; } .st-kv b.no { color: #ff6a5a; }
+
+/* settings overlay */
+#settings { position: fixed; inset: 0; z-index: 30; display: none; place-items: center; background: rgba(0, 0, 0, 0.45); }
+#settings.open { display: grid; }
+.set-panel {
+  width: min(420px, calc(100vw - 32px)); padding: 18px 22px 16px; background: var(--panel);
+  border: 1px solid var(--line); border-top: 2px solid var(--amber); font-family: var(--display); color: var(--ink);
+}
+.set-panel header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+.set-panel h2 { margin: 2px 0 0; font-size: 28px; letter-spacing: 0.06em; }
+.set-close { border: 0; background: none; color: var(--muted); font-size: 18px; cursor: pointer; }
+.set-row { display: grid; grid-template-columns: 1fr 160px 34px; align-items: center; gap: 10px; padding: 7px 0; font-size: 16px; }
+.set-row output { font: 600 12px var(--mono); color: var(--muted); text-align: right; }
+.set-row input[type="range"] { accent-color: var(--amber); width: 100%; }
+.set-mute { grid-template-columns: 1fr auto auto; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+.set-mute input { accent-color: var(--amber); width: 18px; height: 18px; }
+.set-mute small, .set-panel footer span { font: 11px var(--mono); color: var(--muted); }
+.set-sub { margin-top: 10px; font: 600 10px var(--mono); letter-spacing: 0.18em; color: var(--muted); }
+.set-panel footer { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.set-reset { border: 1px solid var(--line); background: none; color: var(--ink); padding: 6px 10px; cursor: pointer; font: 600 13px var(--display); letter-spacing: 0.06em; }
+.set-panel kbd { display: inline-block; padding: 0 4px; font: 600 10px/16px var(--mono); border: 1px solid rgba(255,255,255,0.3); }
+#gear {
+  position: fixed; right: 16px; top: 8px; z-index: 5; border: 0; background: none; cursor: pointer;
+  color: #9fb4cc; font-size: 18px; text-shadow: 0 0 6px #000;
+}
+#gear:hover { color: #fff; }
+#fps { right: 44px; }
+body.docked #gear { display: none; }

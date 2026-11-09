@@ -2,6 +2,9 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRONE_STATUS, type DroneState, type DroneStatus } from "../shared/schema";
 import { Thruster } from "./thruster";
+import { makeBeam, placeBeam } from "./drill";
+import type { AsteroidField } from "./asteroids";
+import type { Effects } from "./fx";
 
 /** Client view of a server-simulated cargo drone (a small autonomous ship). */
 export interface Drone {
@@ -9,6 +12,9 @@ export interface Drone {
   root: THREE.Group;
   bank: THREE.Group;
   thruster: Thruster;
+  beam: THREE.Mesh;
+  beamPower: number;
+  target: string;
   pos: THREE.Vector3; // smoothed render position
   vel: THREE.Vector3;
   heading: number;
@@ -56,10 +62,12 @@ export class DroneFleet {
     const thruster = new Thruster(false);
     thruster.group.scale.setScalar(0.45);
     (model.getObjectByName("DroneThruster") ?? model).add(thruster.group);
-    this.group.add(root);
+    const beam = makeBeam(new THREE.Color(0.85, 0.95, 1).multiplyScalar(2.4), new THREE.Color("#2fa8ff").multiplyScalar(1.5));
+    beam.visible = false;
+    this.group.add(root, beam);
     this.scene.add(thruster.trail);
     const d: Drone = {
-      id, root, bank, thruster,
+      id, root, bank, thruster, beam, beamPower: 0, target: "",
       pos: new THREE.Vector3(s.x, 0, s.z), vel: new THREE.Vector3(),
       heading: s.h, lastH: s.h, state: DRONE_STATUS[s.status] ?? "parked", cargo: s.cargo,
     };
@@ -68,10 +76,12 @@ export class DroneFleet {
     return d;
   }
 
-  sync(states: MapLike<DroneState>, dt: number, time: number) {
+  sync(states: MapLike<DroneState>, dt: number, time: number, field: AsteroidField, fx: Effects, camera: THREE.Camera) {
+    const camPos = camera.getWorldPosition(new THREE.Vector3());
     states.forEach((s, id) => {
       const d = this.byId.get(id) ?? this.create(id, s);
       d.state = DRONE_STATUS[s.status] ?? "parked";
+      d.target = s.target;
       d.cargo = s.cargo;
       // extrapolate with the synced speed/heading, then smooth towards it
       d.vel.set(-Math.sin(s.h) * s.speed, 0, -Math.cos(s.h) * s.speed);
@@ -86,7 +96,7 @@ export class DroneFleet {
     for (let i = this.list.length - 1; i >= 0; i--) {
       const d = this.list[i];
       if (!states.get(d.id)) {
-        this.group.remove(d.root);
+        this.group.remove(d.root, d.beam);
         this.scene.remove(d.thruster.trail);
         this.byId.delete(d.id);
         this.list.splice(i, 1);
@@ -95,6 +105,20 @@ export class DroneFleet {
       d.root.position.copy(d.pos);
       d.root.rotation.y = d.heading;
       d.root.updateMatrixWorld();
+      // mining beam (blue, to tell drones apart from the orange player lasers and yellow miners)
+      const rock = d.state === "mining" && d.target ? field.get(d.target) : undefined;
+      d.beamPower += ((rock ? 1 : 0) - d.beamPower) * Math.min(1, 8 * dt);
+      d.beam.visible = d.beamPower > 0.03 && !!rock;
+      if (d.beam.visible && rock) {
+        const start = d.pos.clone().add(new THREE.Vector3(-Math.sin(d.heading), 0, -Math.cos(d.heading)).multiplyScalar(0.7));
+        const dir = rock.pos.clone().sub(start).setY(0).normalize();
+        const end = rock.pos.clone().addScaledVector(dir, -rock.radius * 0.85);
+        placeBeam(d.beam, start, end, camPos, 0.08);
+        const u = (d.beam.material as THREE.ShaderMaterial).uniforms;
+        u.uTime.value = time;
+        u.uPower.value = d.beamPower;
+        fx.drillImpact(end, dir.negate(), dt * 0.4);
+      }
       const moving = d.state === "outbound" || d.state === "returning" || d.state === "waiting";
       d.thruster.update(dt, time, moving ? Math.min(1, d.vel.length() / 10) : 0.05, false, d.vel);
     }

@@ -6,9 +6,10 @@ import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { PILOT_COLORS, SECTOR, STATION, armPodPos } from "../shared/config";
 import type { BoomMsg, BuiltMsg, SnapMsg, ToastMsg } from "../shared/schema";
-import { MINER, MODULES, MODULE_ORDER, levelOf, stats, type ModuleId } from "../shared/upgrades";
+import { MINER, MODULES, MODULE_ORDER, fleetStats, levelOf, stats, type ModuleId } from "../shared/upgrades";
 import { AsteroidField } from "./asteroids";
 import { Sfx, spatial } from "./audio";
+import { SettingsPanel } from "./settings";
 import { Drill } from "./drill";
 import { DroneFleet } from "./drones";
 import { createSpaceEnvironment, SUN_DIR } from "./environment";
@@ -85,6 +86,14 @@ const assets = Promise.all([
 ]);
 
 const sfx = new Sfx();
+const settings = new SettingsPanel(document.body, sfx);
+const gear = document.createElement("button");
+gear.id = "gear";
+gear.title = "Options (O)";
+gear.textContent = "⚙";
+gear.addEventListener("mousedown", (e) => e.stopPropagation());
+gear.addEventListener("click", () => settings.toggle());
+document.body.appendChild(gear);
 
 // ---------------------------------------------------------------- login
 const login = document.getElementById("login")!;
@@ -160,6 +169,7 @@ menu = new StationMenu(document.body, {
   buyMiner: () => net.send("buyMiner"),
   setColor: (color) => net.send("setColor", { color }),
   undock: () => net.send("undock"),
+  settings: () => settings.toggle(),
 }, shipTemplate);
 
 // ---------------------------------------------------------------- server events
@@ -193,11 +203,16 @@ net.room.onLeave(() => {
 
 addEventListener("keydown", (e) => {
   if (e.repeat || !login.classList.contains("hidden")) return;
+  if (e.code === "KeyO") { settings.toggle(); return; }
+  if (settings.isOpen) { if (e.code === "Escape") settings.close(); return; } // keys go to the panel
   if (menu!.isOpen && menu!.key(e)) { e.preventDefault(); return; }
   if (e.code === "KeyE") net.send(docked ? "undock" : "dock");
   else if (e.code === "Escape" && docked) net.send("undock");
   else if (e.code === "KeyF" && !docked) net.send("minerAction");
-  else if (e.code === "KeyN") toast(sfx.toggleMute() ? "Sound off" : "Sound on");
+  else if (e.code === "KeyN") {
+    toast(sfx.toggleMute() ? "Sound off" : "Sound on");
+    settings.sync();
+  }
 });
 
 function portPos(k: number) {
@@ -225,8 +240,8 @@ function updateAudio(state: typeof net.state, me: typeof net.me, st: ReturnType<
   wasBoosting = ship.boosting;
 
   const beam = drill.beamPower;
-  sfx.loop("laser_loop")?.set(0.42 * beam, drill.target ? 1 : 1.06, 0.04);
-  sfx.loop("drill_hit_loop")?.set(drill.target ? 0.5 * beam : 0, 1, 0.05);
+  sfx.loop("laser_loop")?.set(0.32 * beam, drill.target ? 1 : 1.04, 0.06);
+  sfx.loop("drill_hit_loop")?.set(drill.target ? 0.38 * beam : 0, 1, 0.06);
 
   const cargo = me?.cargo ?? 0;
   const gained = cargo - lastCargo;
@@ -311,8 +326,9 @@ function frame(now?: number) {
 
   ore.sync(state.ore, dt);
   updateAudio(state, me, st);
-  fleet.sync(state.miners, dt, t, field, fx, camera);
-  drones.sync(state.drones, dt, t);
+  const fl = fleetStats(state.station.levels);
+  fleet.sync(state.miners, dt, t, field, fx, camera, fl.minerRadius);
+  drones.sync(state.drones, dt, t, field, fx, camera);
   remotes.sync(state.players, net.sessionId, dt, t, field, camera, fx);
   for (const mid of MODULE_ORDER) {
     const l = levelOf(state.station.levels, mid);
@@ -400,7 +416,7 @@ function frame(now?: number) {
   state.players.forEach((pl, sid) => { if (sid !== net.sessionId) pilots.push({ x: pl.x, z: pl.z, color: PILOT_COLORS[pl.color % PILOT_COLORS.length].hex }); });
   for (const d of drones.list) droneDots.push({ x: d.pos.x, z: d.pos.z });
   radar.draw({ x: p.x, z: p.z, heading: ship.heading }, field.list, ore.positions, drill.target, drill.range, t,
-    { x: 0, z: 0 }, fleet.list, { pilots, drones: droneDots, sectorRadius: SECTOR.radius });
+    { x: 0, z: 0 }, fleet.list, { pilots, drones: droneDots, sectorRadius: SECTOR.radius, minerZone: fl.minerRadius });
 
   fpsFrames++;
   fpsTime += timer.getDelta();

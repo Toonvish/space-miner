@@ -146,14 +146,16 @@ const S: Record<string, () => Buf> = {
   },
   // mining laser: buzzy, amplitude-modulated; integer frequencies => exactly periodic over 1 s
   laser_loop() {
+    // soft, warm hum: triangle + sine tones (no sawtooth buzz), gentle flutter, top rolled off.
+    // Integer frequencies => exactly periodic over 1 s, so it loops without a seam.
     const d = 2;
-    const raw = osc(d, 220, "saw");
-    mix(raw, osc(d, 222, "saw"), 0.7); // 2 Hz beating
-    env(raw, (t) => 0.72 + 0.28 * Math.sin(2 * Math.PI * 30 * t));
-    const out = filt(raw, "bp", 1300, 0.8);
-    mix(out, osc(d, 1760), 0.12);
-    mix(out, osc(d, 2640), 0.05);
-    return normalize(out.slice(n(1)), 0.75); // second half: filter has settled, loops perfectly
+    const raw = osc(d, 220, "tri");
+    mix(raw, osc(d, 222, "tri"), 0.6); // slow 2 Hz beating, like a shimmering beam
+    mix(raw, osc(d, 110), 0.45); // warm sub hum
+    env(raw, (t) => 0.88 + 0.12 * Math.sin(2 * Math.PI * 30 * t));
+    const out = filt(raw, "lp", 900, 0.6);
+    mix(out, osc(d, 880), 0.03); // faint energy whine
+    return normalize(out.slice(n(1)), 0.7);
   },
   // rock being cut: dense crackle + grind
   drill_hit_loop() {

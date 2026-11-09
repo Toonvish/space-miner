@@ -6,7 +6,8 @@ import {
   type BoomMsg, type DroneStatus, type MinerStatus, type SectorState,
 } from "../shared/schema";
 import {
-  MINER, MODULES, MODULE_ORDER, levelOf, maxLevel, minerCost, nextCost, stats, type ModuleId, type ShipStats,
+  ALL_UPGRADES, MINER, MODULES, fleetStats, levelOf, maxLevel, minerCost, missingRequirements, nextCost, stats,
+  type ModuleId, type ShipStats,
 } from "../shared/upgrades";
 import type { PlayerSave, WorldSave } from "./persistence";
 
@@ -18,8 +19,10 @@ export interface WorldEvents {
 }
 
 interface OreRuntime { vx: number; vz: number; age: number }
-interface MinerRuntime { age: number; aim: number }
-interface DroneRuntime { timer: number; vx: number; vz: number; bay: number }
+interface Motion { vx: number; vz: number }
+interface MinerRuntime extends Motion { age: number; aim: number }
+interface DroneRuntime extends Motion { timer: number; bay: number; aim: number }
+interface Mover { x: number; z: number; h?: number }
 
 const rand = (a: number, b: number) => a + Math.random() * (b - a);
 const MINER_IDX = (s: MinerStatus) => MINER_STATUS.indexOf(s);
@@ -32,9 +35,11 @@ export class World {
   private minerRt = new Map<string, MinerRuntime>();
   private droneRt = new Map<string, DroneRuntime>();
   stats: ShipStats;
+  fleet: ReturnType<typeof fleetStats>;
 
   constructor(readonly state: SectorState, private events: WorldEvents) {
     this.stats = stats(state.station.levels);
+    this.fleet = fleetStats(state.station.levels);
   }
 
   get time() { return this.state.time; }
@@ -43,7 +48,7 @@ export class World {
   // ------------------------------------------------------------------ persistence
   load(save: WorldSave) {
     const st = this.state.station;
-    for (const id of MODULE_ORDER) {
+    for (const id of ALL_UPGRADES) {
       const v = Math.floor(Number(save.station.levels?.[id] ?? 0));
       st.levels.set(id, Math.max(0, Math.min(maxLevel(id), v)));
     }
@@ -58,11 +63,11 @@ export class World {
 
   snapshot(players: Record<string, PlayerSave>): WorldSave {
     const levels: Record<string, number> = {};
-    for (const id of MODULE_ORDER) levels[id] = levelOf(this.state.station.levels, id);
+    for (const id of ALL_UPGRADES) levels[id] = levelOf(this.state.station.levels, id);
     let droneCargo = 0;
     this.state.drones.forEach((d) => (droneCargo += d.cargo));
     const miners: WorldSave["miners"] = [];
-    this.state.miners.forEach((m) => miners.push({ x: m.x, z: m.z, stored: m.stored, owner: m.owner }));
+    this.state.miners.forEach((m) => miners.push({ x: m.ax, z: m.az, stored: m.stored, owner: m.owner }));
     return {
       version: 1,
       station: { levels, stored: this.state.station.stored, minersBought: this.state.station.minersBought },
@@ -72,6 +77,7 @@ export class World {
 
   private refreshStats() {
     this.stats = stats(this.state.station.levels);
+    this.fleet = fleetStats(this.state.station.levels);
     const ports = this.state.station.ports;
     while (ports.length < this.stats.ports) ports.push("");
     let n = this.state.drones.size;
@@ -203,6 +209,8 @@ export class World {
     if (!p || p.port < 0 || !MODULES[id]) return;
     const cost = nextCost(st.levels, id);
     if (!Number.isFinite(cost)) return;
+    const missing = missingRequirements(st.levels, id);
+    if (missing.length) return this.events.toast(sessionId, `Requires ${missing.join(", ")}`);
     if (st.stored < cost) return this.events.toast(sessionId, "Not enough ore in the station");
     st.stored -= cost;
     const lvl = levelOf(st.levels, id) + 1;
@@ -235,14 +243,14 @@ export class World {
   // ------------------------------------------------------------------ miners
   private addMiner(x: number, z: number, owner: string, stored = 0, settled = false) {
     const m = new MinerState();
-    m.x = x;
-    m.z = z;
+    m.x = m.ax = x;
+    m.z = m.az = z;
     m.owner = owner;
     m.stored = Math.max(0, Math.min(MINER.capacity, stored));
     m.status = MINER_IDX("deploying");
     const id = this.id("m");
     this.state.miners.set(id, m);
-    this.minerRt.set(id, { age: settled ? 10 : 0, aim: 0 });
+    this.minerRt.set(id, { age: settled ? 10 : 0, aim: 0, vx: 0, vz: 0 });
     return id;
   }
 
@@ -272,13 +280,108 @@ export class World {
     }
     if (p.minerStock <= 0) return;
     if (Math.hypot(p.x, p.z) < STATION.socketRadius + 8) return this.events.toast(sessionId, "Too close to the station");
-    if (near && nd < 6) return this.events.toast(sessionId, "Too close to another miner");
+    let closeAnchor = false;
+    this.state.miners.forEach((m) => { if (Math.hypot(m.ax - p.x, m.az - p.z) < 6) closeAnchor = true; });
+    if (closeAnchor) return this.events.toast(sessionId, "Too close to another miner");
     p.minerStock--;
     this.addMiner(p.x, p.z, p.name);
     this.events.toast(sessionId, "Miner deployed");
   }
 
-  // ------------------------------------------------------------------ drones
+  // ------------------------------------------------------------------ movement shared by miners and drones
+  /** Steer towards (tx, tz) with arrival slow-down; returns the remaining distance. */
+  private steer(o: Mover & { speed?: number }, rt: Motion, tx: number, tz: number, dt: number,
+    maxSpeed: number, accel: number, arrive = 4, faceMotion = true): number {
+    const dx = tx - o.x;
+    const dz = tz - o.z;
+    const dist = Math.hypot(dx, dz);
+    const want = maxSpeed * Math.min(1, dist / arrive);
+    const dvx = dist > 1e-3 ? (dx / dist) * want : 0;
+    const dvz = dist > 1e-3 ? (dz / dist) * want : 0;
+    const k = Math.min(1, (accel / maxSpeed) * dt * 3);
+    rt.vx += (dvx - rt.vx) * k;
+    rt.vz += (dvz - rt.vz) * k;
+    o.x += rt.vx * dt;
+    o.z += rt.vz * dt;
+    const sp = Math.hypot(rt.vx, rt.vz);
+    if (o.speed !== undefined) o.speed = sp;
+    if (faceMotion && sp > 0.5 && o.h !== undefined) this.turnTo(o as { h: number }, Math.atan2(-rt.vx, -rt.vz), dt);
+    return dist;
+  }
+
+  /** Rotate heading towards `want` (forward = (-sin h, -cos h)). */
+  private turnTo(o: { h: number }, want: number, dt: number, rate = DRONE.turnRate) {
+    const diff = Math.atan2(Math.sin(want - o.h), Math.cos(want - o.h));
+    o.h += Math.max(-rate * dt, Math.min(rate * dt, diff));
+    return Math.abs(diff);
+  }
+
+  /** Point at `cut` distance from the rock surface on the side facing (fx, fz). */
+  private standoff(fx: number, fz: number, ap: { x: number; z: number }, r: number, cut: number) {
+    const dx = fx - ap.x, dz = fz - ap.z;
+    const d = Math.hypot(dx, dz) || 1;
+    return { x: ap.x + (dx / d) * (r + cut), z: ap.z + (dz / d) * (r + cut) };
+  }
+
+  // ------------------------------------------------------------------ miners (area harvesters)
+  private updateMiners(dt: number) {
+    const t = this.time;
+    const R = this.fleet.minerRadius;
+    this.state.miners.forEach((m, id) => {
+      const rt = this.minerRt.get(id)!;
+      rt.age += dt;
+      if (rt.age < 1.2) { m.status = MINER_IDX("deploying"); return; }
+      const full = m.stored >= MINER.capacity;
+
+      // drop targets that broke, or drifted out of the work zone
+      let a = m.target ? this.state.asteroids.get(m.target) : undefined;
+      if (a) {
+        const ap = asteroidPosAt(a, t);
+        if (Math.hypot(ap.x - m.ax, ap.z - m.az) > R + a.r + 3) a = undefined;
+      }
+      if (!a || full) { m.target = ""; a = undefined; }
+
+      if (!a && !full) {
+        // nearest rock (to the miner) whose centre lies inside the zone
+        let bd = Infinity;
+        this.state.asteroids.forEach((o, aid) => {
+          const op = asteroidPosAt(o, t);
+          if (Math.hypot(op.x - m.ax, op.z - m.az) > R) return;
+          const d = Math.hypot(op.x - m.x, op.z - m.z);
+          if (d < bd) { bd = d; m.target = aid; }
+        });
+        a = m.target ? this.state.asteroids.get(m.target) : undefined;
+        rt.aim = 0;
+      }
+
+      if (a) {
+        const ap = asteroidPosAt(a, t);
+        const surface = Math.hypot(ap.x - m.x, ap.z - m.z) - a.r;
+        const goal = this.standoff(m.x, m.z, ap, a.r, MINER.laserRange * 0.6);
+        this.steer(m, rt, goal.x, goal.z, dt, MINER.speed, MINER.speed * 1.5, 3, false);
+        if (surface <= MINER.laserRange) {
+          m.status = MINER_IDX("mining");
+          rt.aim += dt;
+          if (rt.aim > 0.5) this.damage(m.target, this.fleet.minerDps * dt, { miner: id }); // turret swings first
+        } else {
+          m.status = MINER_IDX("moving");
+          rt.aim = 0;
+        }
+      } else {
+        // nothing to do (full or zone cleared): hover back to the anchor
+        this.steer(m, rt, m.ax, m.az, dt, MINER.speed, MINER.speed, 4, false);
+        m.status = MINER_IDX(full ? "full" : "idle");
+      }
+      // never leave the zone
+      const off = Math.hypot(m.x - m.ax, m.z - m.az);
+      if (off > R + 2) {
+        m.x = m.ax + ((m.x - m.ax) / off) * (R + 2);
+        m.z = m.az + ((m.z - m.az) / off) * (R + 2);
+      }
+    });
+  }
+
+  // ------------------------------------------------------------------ drones (autonomous mining ships)
   private addDrone(bay: number) {
     const d = new DroneState();
     const pp = armPodPos(MODULES.drones.angle, bay);
@@ -288,91 +391,85 @@ export class World {
     d.status = DRONE_IDX("parked");
     const id = this.id("d");
     this.state.drones.set(id, d);
-    this.droneRt.set(id, { timer: 0, vx: 0, vz: 0, bay });
+    this.droneRt.set(id, { timer: 0, vx: 0, vz: 0, bay, aim: 0 });
   }
 
-  /** Steer towards (tx, tz); returns the remaining distance. */
-  private steer(d: DroneState, rt: DroneRuntime, tx: number, tz: number, dt: number, arrive = 4): number {
-    const dx = tx - d.x;
-    const dz = tz - d.z;
-    const dist = Math.hypot(dx, dz);
-    const want = DRONE.speed * Math.min(1, dist / arrive);
-    const dvx = dist > 1e-3 ? (dx / dist) * want : 0;
-    const dvz = dist > 1e-3 ? (dz / dist) * want : 0;
-    const k = Math.min(1, (DRONE.accel / DRONE.speed) * dt * 3);
-    rt.vx += (dvx - rt.vx) * k;
-    rt.vz += (dvz - rt.vz) * k;
-    d.x += rt.vx * dt;
-    d.z += rt.vz * dt;
-    d.speed = Math.hypot(rt.vx, rt.vz);
-    if (d.speed > 0.5) {
-      const want = Math.atan2(-rt.vx, -rt.vz); // heading convention: forward = (-sin h, -cos h)
-      const diff = Math.atan2(Math.sin(want - d.h), Math.cos(want - d.h));
-      d.h += Math.max(-DRONE.turnRate * dt, Math.min(DRONE.turnRate * dt, diff));
-    }
-    return dist;
-  }
-
-  private pickMinerForDrone(id: string): string {
+  /** Nearest free rock within the drones' roaming range, outside miner zones, not taken by another drone. */
+  private pickRockForDrone(id: string, fromX: number, fromZ: number): string {
+    const t = this.time;
+    const taken = new Set<string>();
+    this.state.drones.forEach((o, oid) => { if (oid !== id && o.target) taken.add(o.target); });
+    const zones: { x: number; z: number }[] = [];
+    this.state.miners.forEach((m) => zones.push({ x: m.ax, z: m.az }));
+    const R = this.fleet.minerRadius;
     let best = "";
-    let most = DRONE.minPickup - 1e-6;
-    this.state.miners.forEach((m, mid) => {
-      if (m.claimed !== "" && m.claimed !== id) return;
-      if (m.stored > most) { most = m.stored; best = mid; }
+    let bd = Infinity;
+    this.state.asteroids.forEach((a, aid) => {
+      if (taken.has(aid)) return;
+      const ap = asteroidPosAt(a, t);
+      if (Math.hypot(ap.x, ap.z) > this.fleet.droneReach) return;
+      if (zones.some((z) => Math.hypot(ap.x - z.x, ap.z - z.z) < R + a.r)) return; // leave miners' rocks alone
+      const d = Math.hypot(ap.x - fromX, ap.z - fromZ);
+      if (d < bd) { bd = d; best = aid; }
     });
     return best;
   }
 
   private updateDrones(dt: number) {
+    const t = this.time;
     this.state.drones.forEach((d, id) => {
       const rt = this.droneRt.get(id)!;
       const status = DRONE_STATUS[d.status];
       const bay = armPodPos(MODULES.drones.angle, rt.bay);
       const set = (s: DroneStatus) => (d.status = DRONE_IDX(s));
-      const release = () => {
-        const m = this.state.miners.get(d.target);
-        if (m && m.claimed === id) m.claimed = "";
+      const fly = (x: number, z: number, arrive = 4) => this.steer(d, rt, x, z, dt, DRONE.speed, DRONE.accel, arrive);
+      const goHome = () => { d.target = ""; set("returning"); };
+      const nextRock = () => {
+        d.target = this.pickRockForDrone(id, d.x, d.z);
+        rt.aim = 0;
+        if (d.target) set("outbound"); else if (d.cargo >= 1) goHome(); else set("returning");
       };
 
       switch (status) {
         case "parked": {
-          this.steer(d, rt, bay.x, bay.z, dt, 2);
-          const target = this.pickMinerForDrone(id);
-          if (target) {
-            this.state.miners.get(target)!.claimed = id;
-            d.target = target;
-            set("outbound");
+          fly(bay.x, bay.z, 2);
+          rt.timer -= dt;
+          if (rt.timer <= 0) { // look for work every second
+            rt.timer = 1;
+            const target = this.pickRockForDrone(id, d.x, d.z);
+            if (target) { d.target = target; set("outbound"); }
           }
           break;
         }
-        case "outbound": {
-          const m = this.state.miners.get(d.target);
-          if (!m) { d.target = ""; set("returning"); break; }
-          if (this.steer(d, rt, m.x, m.z, dt) < 1.5) { rt.timer = DRONE.loadTime; set("loading"); }
-          break;
-        }
-        case "loading": {
-          const m = this.state.miners.get(d.target);
-          if (m) this.steer(d, rt, m.x, m.z, dt);
-          rt.timer -= dt;
-          if (rt.timer <= 0 || !m) {
-            if (m) {
-              const take = Math.min(m.stored, DRONE.capacity - d.cargo);
-              m.stored -= take;
-              d.cargo += take;
-            }
-            release();
-            d.target = "";
-            set("returning");
+        case "outbound":
+        case "mining": {
+          const a = d.target ? this.state.asteroids.get(d.target) : undefined;
+          if (!a) { // rock broke (maybe by us) or vanished
+            if (d.cargo >= DRONE.capacity * 0.9) goHome(); else nextRock();
+            break;
+          }
+          const ap = asteroidPosAt(a, t);
+          if (Math.hypot(ap.x, ap.z) > this.fleet.droneReach + 15) { nextRock(); break; }
+          const surface = Math.hypot(ap.x - d.x, ap.z - d.z) - a.r;
+          const goal = this.standoff(d.x, d.z, ap, a.r, DRONE.laserRange * 0.6);
+          if (surface > DRONE.laserRange) {
+            fly(goal.x, goal.z, 5);
+            set("outbound");
+            rt.aim = 0;
+          } else {
+            this.steer(d, rt, goal.x, goal.z, dt, DRONE.speed * 0.4, DRONE.accel, 3, false);
+            const misalign = this.turnTo(d, Math.atan2(-(ap.x - d.x), -(ap.z - d.z)), dt, DRONE.turnRate * 1.5);
+            set("mining");
+            rt.aim += dt;
+            if (rt.aim > 0.4 && misalign < 0.35) this.damage(d.target, this.fleet.droneDps * dt, { drone: id });
           }
           break;
         }
         case "returning":
         case "waiting": {
-          if (d.cargo < 0.5) {
-            // nothing to deliver: head home to the bay
+          if (d.cargo < 0.5) { // nothing to deliver: back to the bay
             d.cargo = 0;
-            if (this.steer(d, rt, bay.x, bay.z, dt, 3) < 0.5) set("parked");
+            if (fly(bay.x, bay.z, 3) < 0.5) { set("parked"); rt.timer = 0; }
             break;
           }
           if (d.port < 0) {
@@ -382,30 +479,29 @@ export class World {
               this.state.station.ports[k] = `d:${id}`;
               d.port = k;
               set("returning");
-            } else if (distHome < 16) {
-              // all ports busy: hold in a slow orbit until one frees up
+            } else if (distHome < 16) { // all ports busy: slow holding orbit
               set("waiting");
-              const a = Math.atan2(d.z, d.x) + 0.35;
-              this.steer(d, rt, Math.cos(a) * 12, Math.sin(a) * 12, dt, 2);
+              const ang = Math.atan2(d.z, d.x) + 0.35;
+              fly(Math.cos(ang) * 12, Math.sin(ang) * 12, 2);
             } else {
-              this.steer(d, rt, 0, 0, dt);
+              fly(0, 0);
             }
             break;
           }
           const pp = this.portPos(d.port);
-          if (this.steer(d, rt, pp.x, pp.z, dt, 3) < 0.4) { rt.timer = DRONE.unloadTime; set("unloading"); }
+          if (fly(pp.x, pp.z, 3) < 0.4) { rt.timer = DRONE.unloadTime; set("unloading"); }
           break;
         }
         case "unloading": {
           const pp = this.portPos(d.port);
-          this.steer(d, rt, pp.x, pp.z, dt, 2);
+          fly(pp.x, pp.z, 2);
           rt.timer -= dt;
           if (rt.timer <= 0) {
             this.state.station.stored += d.cargo;
             d.cargo = 0;
             this.freePort(`d:${id}`);
             d.port = -1;
-            set("returning"); // -> heads to the bay, or straight out again from "parked"
+            nextRock(); // straight back out if there is work, else home to the bay
           }
           break;
         }
@@ -451,7 +547,7 @@ export class World {
     a.x0 = x; a.z0 = z; a.vx = vx; a.vz = vz; a.t0 = this.time;
   }
 
-  private damage(id: string, amount: number, by: { player?: string; miner?: string }) {
+  private damage(id: string, amount: number, by: { player?: string; miner?: string; drone?: string }) {
     const a = this.state.asteroids.get(id);
     if (!a) return;
     a.hp -= amount;
@@ -460,7 +556,7 @@ export class World {
     const pos = asteroidPosAt(a, this.time);
     const vel = asteroidVelAt(a, this.time);
     this.state.asteroids.delete(id);
-    this.events.boom({ x: pos.x, z: pos.z, r: a.r, vx: vel.vx, vz: vel.vz, by: by.player ?? by.miner ?? "" });
+    this.events.boom({ x: pos.x, z: pos.z, r: a.r, vx: vel.vx, vz: vel.vz, by: by.player ?? by.miner ?? by.drone ?? "" });
 
     if (a.r > ASTEROID.splitRadius) {
       const n = a.r > 3.2 ? 3 : 2;
@@ -477,6 +573,9 @@ export class World {
     if (by.miner) {
       const m = this.state.miners.get(by.miner);
       if (m) m.stored = Math.min(MINER.capacity, m.stored + yieldOre);
+    } else if (by.drone) {
+      const d = this.state.drones.get(by.drone);
+      if (d) d.cargo = Math.min(DRONE.capacity, d.cargo + yieldOre);
     } else {
       for (let i = 0; i < yieldOre; i++) {
         const ang = Math.random() * Math.PI * 2;
@@ -531,31 +630,7 @@ export class World {
       this.damage(p.target, DRILL.dps * this.stats.drillMul * dt, { player: sid });
     });
 
-    // miners
-    this.state.miners.forEach((m, id) => {
-      const rt = this.minerRt.get(id)!;
-      rt.age += dt;
-      const full = m.stored >= MINER.capacity;
-      let target = m.target ? this.state.asteroids.get(m.target) : undefined;
-      if (!target) m.target = "";
-      if (full) m.target = "";
-      if (!full && rt.age > 1.2 && !m.target) {
-        let bd = Infinity;
-        this.state.asteroids.forEach((a, aid) => {
-          const ap = asteroidPosAt(a, t);
-          const d = Math.hypot(ap.x - m.x, ap.z - m.z) - a.r;
-          if (d < MINER.range && d < bd) { bd = d; m.target = aid; }
-        });
-        target = m.target ? this.state.asteroids.get(m.target) : undefined;
-        rt.aim = 0;
-      }
-      m.status = MINER_IDX(rt.age < 1.2 ? "deploying" : full ? "full" : m.target ? "mining" : "idle");
-      if (target && m.target) {
-        rt.aim += dt;
-        if (rt.aim > 0.6) this.damage(m.target, MINER.dps * dt, { miner: id }); // turret swings first
-      }
-    });
-
+    this.updateMiners(dt);
     this.updateDrones(dt);
     this.updateAsteroids();
     this.updateOre(dt);

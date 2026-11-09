@@ -10,7 +10,51 @@ export const SOUNDS = [
 ] as const;
 export type SoundName = (typeof SOUNDS)[number];
 
-const MUTE_KEY = "space-miner-muted";
+/** Mixer channels shown in the sound settings. */
+export const CHANNELS = [
+  { id: "engine", label: "Engine" },
+  { id: "lasers", label: "Mining Lasers" },
+  { id: "effects", label: "Effects" },
+  { id: "ui", label: "Interface" },
+] as const;
+export type Channel = (typeof CHANNELS)[number]["id"];
+
+const CHANNEL_OF: Record<SoundName, Channel> = {
+  engine_loop: "engine", boost_loop: "engine", boost_start: "engine",
+  laser_loop: "lasers", drill_hit_loop: "lasers",
+  explosion_small: "effects", explosion_large: "effects", ore_pickup: "effects", collect: "effects",
+  dock: "effects", undock: "effects", build: "effects", deploy: "effects", collision: "effects",
+  cargo_full: "ui", notify: "ui", ui_click: "ui", ui_deny: "ui",
+};
+
+export interface AudioSettings {
+  muted: boolean;
+  master: number; // 0..1
+  channels: Record<Channel, number>; // 0..1
+}
+
+const SETTINGS_KEY = "space-miner-audio";
+const DEFAULTS: AudioSettings = {
+  muted: false, master: 0.7, channels: { engine: 0.8, lasers: 0.8, effects: 1, ui: 0.8 },
+};
+
+function loadSettings(): AudioSettings {
+  const s: AudioSettings = { ...DEFAULTS, channels: { ...DEFAULTS.channels } };
+  try {
+    const d = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "null");
+    if (d) {
+      s.muted = !!d.muted;
+      if (Number.isFinite(d.master)) s.master = Math.max(0, Math.min(1, d.master));
+      for (const c of CHANNELS) {
+        const v = d.channels?.[c.id];
+        if (Number.isFinite(v)) s.channels[c.id] = Math.max(0, Math.min(1, v));
+      }
+    } else if (localStorage.getItem("space-miner-muted") === "1") {
+      s.muted = true; // migrate the old mute flag
+    }
+  } catch { /* storage unavailable: defaults */ }
+  return s;
+}
 
 export interface PlayOptions {
   gain?: number;
@@ -31,15 +75,13 @@ export class Loop {
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master!: GainNode;
+  private channelGain = new Map<Channel, GainNode>();
   private buffers = new Map<SoundName, AudioBuffer>();
   private loops = new Map<SoundName, Loop>();
   private lastPlay = new Map<SoundName, number>();
-  muted = false;
-  volume = 0.7;
+  readonly settings = loadSettings();
 
-  constructor() {
-    try { this.muted = localStorage.getItem(MUTE_KEY) === "1"; } catch { /* ignore */ }
-  }
+  get muted() { return this.settings.muted; }
 
   /** Must be called from a user gesture (browsers block audio before one). */
   async start() {
@@ -51,8 +93,14 @@ export class Sfx {
     comp.threshold.value = -12;
     comp.ratio.value = 6;
     this.master = ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : this.volume;
+    this.master.gain.value = this.settings.muted ? 0 : this.settings.master;
     this.master.connect(comp).connect(ctx.destination);
+    for (const c of CHANNELS) {
+      const g = ctx.createGain();
+      g.gain.value = this.settings.channels[c.id];
+      g.connect(this.master);
+      this.channelGain.set(c.id, g);
+    }
     await Promise.all(SOUNDS.map(async (name) => {
       try {
         const res = await fetch(`/sounds/${name}.wav`);
@@ -67,10 +115,25 @@ export class Sfx {
   get ready() { return !!this.ctx && this.buffers.size > 0; }
 
   toggleMute(): boolean {
-    this.muted = !this.muted;
-    try { localStorage.setItem(MUTE_KEY, this.muted ? "1" : "0"); } catch { /* ignore */ }
-    if (this.ctx) this.master.gain.setTargetAtTime(this.muted ? 0 : this.volume, this.ctx.currentTime, 0.05);
-    return this.muted;
+    this.update({ muted: !this.settings.muted });
+    return this.settings.muted;
+  }
+
+  /** Change settings (live) and persist them. */
+  update(change: { muted?: boolean; master?: number; channel?: [Channel, number] }) {
+    const s = this.settings;
+    if (change.muted !== undefined) s.muted = change.muted;
+    if (change.master !== undefined) s.master = Math.max(0, Math.min(1, change.master));
+    if (change.channel) s.channels[change.channel[0]] = Math.max(0, Math.min(1, change.channel[1]));
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.master.gain.setTargetAtTime(s.muted ? 0 : s.master, t, 0.03);
+    for (const c of CHANNELS) this.channelGain.get(c.id)?.gain.setTargetAtTime(s.channels[c.id], t, 0.03);
+  }
+
+  private out(name: SoundName): AudioNode {
+    return this.channelGain.get(CHANNEL_OF[name]) ?? this.master;
   }
 
   /** Fire-and-forget. `minGap` (s) rate-limits rapid repeats of the same sound. */
@@ -92,7 +155,7 @@ export class Sfx {
       p.pan.value = Math.max(-1, Math.min(1, o.pan));
       node = node.connect(p);
     }
-    node.connect(this.master);
+    node.connect(this.out(name));
     src.start();
   }
 
@@ -108,7 +171,7 @@ export class Sfx {
     src.loop = true;
     const g = ctx.createGain();
     g.gain.value = 0;
-    src.connect(g).connect(this.master);
+    src.connect(g).connect(this.out(name));
     src.start(0, Math.random() * b.duration);
     const l = new Loop(ctx, src, g);
     this.loops.set(name, l);

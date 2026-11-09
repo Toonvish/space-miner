@@ -54,11 +54,9 @@ export const DRONE = {
   speed: 13,
   accel: 18,
   turnRate: 4,
-  capacity: 30,
-  minPickup: 8, // only fly out for miners holding at least this much
-  loadTime: 1.5,
+  capacity: 40, // ore per trip
+  laserRange: 5, // standoff from the rock surface while mining
   unloadTime: 1.5,
-  cruiseHeight: 0, // drones fly on the play plane like ships
 };
 
 /** Asteroid position at server time t (velocity decays exponentially, closed form). */

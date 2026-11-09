@@ -43,21 +43,22 @@ export const OreState = schema({
 }, "OreState");
 export type OreState = SchemaType<typeof OreState>;
 
-export const MINER_STATUS = ["deploying", "mining", "idle", "full"] as const;
+export const MINER_STATUS = ["deploying", "mining", "idle", "full", "moving"] as const;
 export type MinerStatus = (typeof MINER_STATUS)[number];
 
 export const MinerState = schema({
-  x: t.float32().default(0),
+  x: t.float32().default(0), // current (hovering) position
   z: t.float32().default(0),
+  ax: t.float32().default(0), // anchor: centre of the circular work zone
+  az: t.float32().default(0),
   stored: t.float32().default(0),
   status: t.uint8().default(0), // index into MINER_STATUS
   target: t.string().default(""), // asteroid id
   owner: t.string().default(""), // name of the player who deployed it
-  claimed: t.string().default(""), // drone id currently flying to empty it
 }, "MinerState");
 export type MinerState = SchemaType<typeof MinerState>;
 
-export const DRONE_STATUS = ["parked", "outbound", "loading", "returning", "waiting", "unloading"] as const;
+export const DRONE_STATUS = ["parked", "outbound", "mining", "returning", "waiting", "unloading"] as const;
 export type DroneStatus = (typeof DRONE_STATUS)[number];
 
 export const DroneState = schema({
@@ -68,7 +69,7 @@ export const DroneState = schema({
   status: t.uint8().default(0), // index into DRONE_STATUS
   cargo: t.float32().default(0),
   port: t.int8().default(-1),
-  target: t.string().default(""), // miner id
+  target: t.string().default(""), // asteroid id it is flying to / mining
 }, "DroneState");
 export type DroneState = SchemaType<typeof DroneState>;
 

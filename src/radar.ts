@@ -5,6 +5,7 @@ import { MINER } from "../shared/upgrades";
 export interface RadarExtras {
   pilots: { x: number; z: number; color: string }[];
   drones: { x: number; z: number }[];
+  minerZone?: number; // work radius drawn around each miner's anchor
   sectorRadius: number;
 }
 
@@ -120,6 +121,18 @@ export class Radar {
       const y = (o.z - ship.z) * k;
       if (x * x + y * y > R * R) continue;
       g.fillRect(x - 1, y - 1, 2, 2);
+    }
+
+    // miner work zones (faint yellow circles)
+    if (extras.minerZone) {
+      g.strokeStyle = "rgba(255, 210, 58, 0.28)";
+      for (const m of miners) {
+        const x = (m.anchor.x - ship.x) * k, y = (m.anchor.z - ship.z) * k;
+        if (Math.hypot(x, y) - extras.minerZone * k > R) continue;
+        g.beginPath();
+        g.arc(x, y, extras.minerZone * k, 0, Math.PI * 2);
+        g.stroke();
+      }
     }
 
     // miners: diamonds coloured by status, with a fill bar

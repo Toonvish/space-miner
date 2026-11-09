@@ -4,8 +4,8 @@ Co-op top-down space mining in the browser. Three.js client, authoritative
 [Colyseus](https://colyseus.io) game server, everything run with [Bun](https://bun.sh).
 
 Mine asteroids with your laser drill, haul ore to the shared home station, build station
-modules that upgrade every pilot's ship, deploy automatic miners, and let cargo drones
-ferry their ore home.
+modules that upgrade every pilot's ship, deploy automatic miners that clear a circular work
+zone, and later unlock autonomous mining drones that roam, mine and deliver ore on their own.
 
 ## Controls
 
@@ -17,8 +17,9 @@ ferry their ore home.
 | E | dock at a free port / undock |
 | F | deploy a miner · collect from a miner · pack up an empty miner |
 | N | mute / unmute sound |
+| O | options (sound volumes per channel) |
 | Mouse wheel | zoom |
-| Docked: 1–7, Enter, M, Tab | select module, construct, buy miner, switch tab |
+| Docked: 1–6, Enter, M, Tab | select module, construct, buy miner, switch tab (Modules · Miners · Drones · Ship) |
 
 ## Development
 
